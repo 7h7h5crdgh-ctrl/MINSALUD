@@ -11,28 +11,9 @@ const CONFIG_REPORTE = {
   pausaMs: 1200,
 };
 
-// ⚠️ Este array puede llenarse manualmente O automáticamente con el botón
-// "🔄 Cargar Funcionarios" del panel (que llama a obtenerListaFuncionarios()).
-let USUARIOS_A_MONITOREAR = [
-  { nombre: 'Aura Alejandra', idFuncionario: 23505 },
-  { nombre: 'Carlos Mauro', idFuncionario: 725 },
-  { nombre: 'Danilo', idFuncionario: 12323 },
-  { nombre: 'Deivy', idFuncionario: 24034 },
-  { nombre: 'Diego Alejandro', idFuncionario: 727 },
-  { nombre: 'Elizabeth', idFuncionario: 728 },
-  { nombre: 'Jenny Liliana', idFuncionario: 730 },
-  { nombre: 'Jhonny Alexander', idFuncionario: 2096 },
-  { nombre: 'Juan David', idFuncionario: 24569 },
-  { nombre: 'Julieta Isabel', idFuncionario: 731 },
-  { nombre: 'Lilian Andrea', idFuncionario: 24277 },
-  { nombre: 'Maria Camila', idFuncionario: 732 },
-  { nombre: 'Miguel Angel', idFuncionario: 2095 },
-  { nombre: 'Pablo Andres', idFuncionario: 733 },
-  { nombre: 'Roberto', idFuncionario: 734 },
-  { nombre: 'Sara Paola', idFuncionario: 23588 },
-  { nombre: 'Sidia', idFuncionario: 735 },
-  { nombre: 'Viviana Andrea', idFuncionario: 23734 },
-];
+// La lista de usuarios se llena con el botón "🔄 Cargar Funcionarios" del panel
+// (que llama a obtenerListaFuncionarios()) — no hace falta escribirla a mano.
+let USUARIOS_A_MONITOREAR = [];
 
 // Trae automáticamente la lista de funcionarios de la oficina configurada.
 // Es defensivo con los nombres de campo porque no confirmamos el JSON exacto de respuesta.
@@ -293,6 +274,11 @@ function crearUIReporteContadores() {
 
     const anio = document.querySelector('#inputAnioReporte').value.trim();
     if (!anio) return console.log('⚠️ Debe indicar un año.');
+
+    if (!USUARIOS_A_MONITOREAR.length) {
+      console.log('⚠️ No hay usuarios cargados. Usa primero el botón "🔄 Cargar Funcionarios".');
+      return;
+    }
 
     document.querySelector('#ResumenReporteContadores').style.display = 'none';
     document.querySelector('#FechaReporteContadores').style.display = 'none';
