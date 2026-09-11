@@ -98,7 +98,10 @@ function crearUIDescargaPdf() {
   cont.style.cssText = 'position:fixed; top:20px; right:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:8px; padding:10px; box-shadow:0 2px 10px rgba(0,0,0,0.3); width:260px; font-family:sans-serif;';
 
   cont.innerHTML = `
-    <div id="EncabezadoDescargaPdf" style="font-weight:bold; margin-bottom:6px; cursor:grab; user-select:none;">📄 Descarga directa de PDF</div>
+    <div id="EncabezadoDescargaPdf" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:6px; cursor:grab; user-select:none;">
+      <span>📄 Descarga directa de PDF</span>
+      <button id="btnCerrarDescargaPdf" title="Cerrar panel" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; line-height:1; padding:0 4px;">✕</button>
+    </div>
     <textarea id="txtIdcPdf" placeholder="IDC (uno por línea o separados por coma)" style="width:100%; height:60px; margin-bottom:6px;"></textarea>
     <button id="btnDescargaPdf" style="width:100%; padding:8px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📄 Descargar PDF</button>
     <div id="ResumenDescargaPdf" style="display:none; margin-top:8px; padding:6px 8px; border-radius:6px; font-size:12px; font-weight:bold;"></div>
@@ -106,6 +109,12 @@ function crearUIDescargaPdf() {
   `;
   document.body.appendChild(cont);
   habilitarArrastrePdf(cont, document.querySelector('#EncabezadoDescargaPdf'));
+
+  document.querySelector('#btnCerrarDescargaPdf').onclick = (e) => {
+    e.stopPropagation();
+    cont.remove();
+  };
+  document.querySelector('#btnCerrarDescargaPdf').addEventListener('mousedown', (e) => e.stopPropagation());
 
   const mostrarResultado = (idc, exito) => {
     const contEstado = document.querySelector('#EstadoDescargaPdf');
@@ -192,4 +201,3 @@ function habilitarArrastrePdf(contenedor, agarre) {
 }
 
 crearUIDescargaPdf();
-
