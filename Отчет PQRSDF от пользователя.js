@@ -5,12 +5,15 @@
 
 const CONFIG_REPORTE = {
   urlContadores: 'https://controldoc.minsalud.gov.co/Controldoc/Gestion/CONSULTARESTADOCUANTOS',
+  urlFuncionarios: 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios',
+  idUnidadAdministrativa: 2,
+  idOficinaProductora: 38,
   pausaMs: 1200,
 };
 
-// ⚠️ EDITA ESTE ARRAY con los usuarios que quieres monitorear.
-// idFuncionario es el ID que viste en la URL (ej. 734 para Ricardo Luque).
-const USUARIOS_A_MONITOREAR = [
+// ⚠️ Este array puede llenarse manualmente O automáticamente con el botón
+// "🔄 Cargar Funcionarios" del panel (que llama a obtenerListaFuncionarios()).
+let USUARIOS_A_MONITOREAR = [
   { nombre: 'Aura Alejandra', idFuncionario: 23505 },
   { nombre: 'Carlos Mauro', idFuncionario: 725 },
   { nombre: 'Danilo', idFuncionario: 12323 },
@@ -30,6 +33,52 @@ const USUARIOS_A_MONITOREAR = [
   { nombre: 'Sidia', idFuncionario: 735 },
   { nombre: 'Viviana Andrea', idFuncionario: 23734 },
 ];
+
+// Trae automáticamente la lista de funcionarios de la oficina configurada.
+// Es defensivo con los nombres de campo porque no confirmamos el JSON exacto de respuesta.
+async function obtenerListaFuncionarios() {
+  const params = new URLSearchParams({
+    IDUNIDADADMINISTRATIVA: CONFIG_REPORTE.idUnidadAdministrativa,
+    IDOFICINAPRODUCTORA: CONFIG_REPORTE.idOficinaProductora,
+    IDCARGO: '',
+    NOMBRES: '',
+    APELLIDOS: '',
+  });
+
+  const resp = await fetch(`${CONFIG_REPORTE.urlFuncionarios}?${params.toString()}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+  });
+
+  if (!resp.ok) {
+    console.log(`❌ Error HTTP ${resp.status} al traer funcionarios.`);
+    return [];
+  }
+
+  const data = await resp.json();
+
+  // La lista puede venir en data.Data (formato grilla Kendo) o directamente como array
+  const lista = Array.isArray(data) ? data : (data.Data || []);
+
+  if (!lista.length) {
+    console.log('⚠️ No se encontraron funcionarios. Respuesta cruda:', data);
+    return [];
+  }
+
+  // Muestra el primer registro crudo, útil para verificar los nombres de campo reales
+  console.log('ℹ️ Ejemplo de registro crudo recibido:', lista[0]);
+
+  return lista.map(f => {
+    // Intenta varios nombres de campo posibles, ya que no confirmamos el formato exacto
+    const nombre = f.NOMBRESAPELLIDOS
+      || [f.NOMBRES, f.APELLIDOS].filter(Boolean).join(' ')
+      || f.NOMBRE
+      || 'Sin nombre';
+    const idFuncionario = f.IDFUNCIONARIO ?? f.IDFUNCIONARIO_VBG ?? f.IdFuncionario;
+    return { nombre, idFuncionario };
+  }).filter(u => u.idFuncionario != null);
+}
 
 // Consulta CONSULTARESTADOCUANTOS para un funcionario y año específicos.
 // Respuesta esperada: un string JSON con formato "*N*N*N*N*N*"
@@ -131,7 +180,11 @@ function crearUIReporteContadores() {
   cont.style.cssText = 'position:fixed; top:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:8px; padding:10px; box-shadow:0 2px 10px rgba(0,0,0,0.3); width:480px; font-family:sans-serif;';
 
   cont.innerHTML = `
-    <div id="EncabezadoReporteContadores" style="font-weight:bold; margin-bottom:8px; cursor:grab; user-select:none;">📊 Reporte de contadores por usuario</div>
+    <div id="EncabezadoReporteContadores" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:8px; cursor:grab; user-select:none;">
+      <span>📊 Reporte de contadores por usuario</span>
+      <button id="btnCerrarReporteContadores" title="Cerrar panel" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; line-height:1; padding:0 4px;">✕</button>
+    </div>
+    <button id="btnCargarFuncionarios" style="width:100%; padding:6px; background:#6b7280; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; margin-bottom:8px;">🔄 Cargar Funcionarios de mi oficina automáticamente</button>
     <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
       <label for="inputAnioReporte" style="font-size:12px; white-space:nowrap;">Año:</label>
       <input id="inputAnioReporte" type="number" value="${new Date().getFullYear()}" style="width:80px; padding:4px;">
@@ -139,22 +192,51 @@ function crearUIReporteContadores() {
     </div>
     <div id="ResumenReporteContadores" style="display:none; margin-bottom:4px; padding:6px 8px; border-radius:6px; font-size:12px; font-weight:bold;"></div>
     <div id="FechaReporteContadores" style="display:none; margin-bottom:8px; font-size:11px; color:#666; font-style:italic;"></div>
-    <table id="TablaReporteContadores" style="width:100%; border-collapse:collapse; font-size:12px; display:none;">
-      <thead>
-        <tr style="text-align:left; border-bottom:2px solid #ccc;">
-          <th style="padding:4px; text-align:center; width:24px;">#</th>
-          <th style="padding:4px;">Usuario</th>
-          <th style="padding:4px; text-align:center; color:#dc2626;">Sin Tram.</th>
-          <th style="padding:4px; text-align:center; color:#ca8a04;">En Tránsito</th>
-          <th style="padding:4px; text-align:center; color:#16a34a;">Gest. Exitosa</th>
-        </tr>
-      </thead>
-      <tbody id="CuerpoTablaReporteContadores"></tbody>
-    </table>
+    <div id="ContenedorScrollTabla" style="max-height:320px; overflow-y:auto; border:1px solid #eee; border-radius:4px;">
+      <table id="TablaReporteContadores" style="width:100%; border-collapse:collapse; font-size:12px; display:none;">
+        <thead>
+          <tr style="text-align:left; border-bottom:2px solid #ccc;">
+            <th style="padding:4px; text-align:center; width:24px; position:sticky; top:0; background:#fff;">#</th>
+            <th style="padding:4px; position:sticky; top:0; background:#fff;">Usuario</th>
+            <th style="padding:4px; text-align:center; color:#dc2626; position:sticky; top:0; background:#fff;">Sin Tram.</th>
+            <th style="padding:4px; text-align:center; color:#ca8a04; position:sticky; top:0; background:#fff;">En Tránsito</th>
+            <th style="padding:4px; text-align:center; color:#16a34a; position:sticky; top:0; background:#fff;">Gest. Exitosa</th>
+          </tr>
+        </thead>
+        <tbody id="CuerpoTablaReporteContadores"></tbody>
+      </table>
+    </div>
     <div id="EstadoReporteContadores" style="margin-top:8px; max-height:100px; overflow-y:auto; font-size:11px; line-height:1.5;"></div>
   `;
   document.body.appendChild(cont);
   habilitarArrastreReporte(cont, document.querySelector('#EncabezadoReporteContadores'));
+
+  document.querySelector('#btnCerrarReporteContadores').onclick = (e) => {
+    e.stopPropagation();
+    cont.remove();
+  };
+  document.querySelector('#btnCerrarReporteContadores').addEventListener('mousedown', (e) => e.stopPropagation());
+
+  document.querySelector('#btnCargarFuncionarios').onclick = async () => {
+    const btnCargar = document.querySelector('#btnCargarFuncionarios');
+    btnCargar.disabled = true;
+    btnCargar.textContent = '⏳ Consultando funcionarios...';
+
+    const lista = await obtenerListaFuncionarios();
+
+    if (lista.length) {
+      USUARIOS_A_MONITOREAR = lista;
+      btnCargar.textContent = `✅ ${lista.length} funcionarios cargados`;
+      console.log(`✅ Se cargaron ${lista.length} funcionarios automáticamente.`, USUARIOS_A_MONITOREAR);
+    } else {
+      btnCargar.textContent = '❌ No se pudo cargar, revisa la consola';
+    }
+
+    setTimeout(() => {
+      btnCargar.disabled = false;
+      btnCargar.textContent = '🔄 Cargar Funcionarios de mi oficina automáticamente';
+    }, 3000);
+  };
 
   const mostrarResultado = (item, exito, indice) => {
     const contEstado = document.querySelector('#EstadoReporteContadores');
