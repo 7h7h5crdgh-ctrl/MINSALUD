@@ -6,8 +6,11 @@
 const CONFIG_REPORTE = {
   urlContadores: 'https://controldoc.minsalud.gov.co/Controldoc/Gestion/CONSULTARESTADOCUANTOS',
   urlFuncionarios: 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios',
-  idUnidadAdministrativa: 2,
-  idOficinaProductora: 38,
+  // Se leen automáticamente de las variables globales que la propia página de ControlDoc
+  // ya declara para la sesión activa (var _IDUNIDADADMINISTRATIVA / _IDOFICINAPRODUCTORA).
+  // El "?? 2" / "?? 38" son solo respaldo por si por algún motivo no existieran.
+  idUnidadAdministrativa: window._IDUNIDADADMINISTRATIVA ?? 2,
+  idOficinaProductora: window._IDOFICINAPRODUCTORA ?? 38,
   pausaMs: 1200,
 };
 
@@ -15,12 +18,12 @@ const CONFIG_REPORTE = {
 // (que llama a obtenerListaFuncionarios()) — no hace falta escribirla a mano.
 let USUARIOS_A_MONITOREAR = [];
 
-// Trae automáticamente la lista de funcionarios de la oficina configurada.
-// Es defensivo con los nombres de campo porque no confirmamos el JSON exacto de respuesta.
-async function obtenerListaFuncionarios() {
+// Trae automáticamente la lista de funcionarios de la oficina indicada.
+// Es defensivo con los nombres de campo porque el formato de respuesta puede variar.
+async function obtenerListaFuncionarios(idOficinaProductora) {
   const params = new URLSearchParams({
     IDUNIDADADMINISTRATIVA: CONFIG_REPORTE.idUnidadAdministrativa,
-    IDOFICINAPRODUCTORA: CONFIG_REPORTE.idOficinaProductora,
+    IDOFICINAPRODUCTORA: idOficinaProductora,
     IDCARGO: '',
     NOMBRES: '',
     APELLIDOS: '',
@@ -156,6 +159,11 @@ function crearUIReporteContadores() {
   const existente = document.querySelector('#ContenedorReporteContadores');
   if (existente) existente.remove();
 
+  const oficinaDetectadaAutomaticamente = typeof window._IDOFICINAPRODUCTORA !== 'undefined';
+  console.log(oficinaDetectadaAutomaticamente
+    ? `ℹ️ ID de oficina detectado automáticamente de la sesión: ${window._IDOFICINAPRODUCTORA}`
+    : `⚠️ No se pudo detectar el ID de oficina de la sesión, usando valor de respaldo: ${CONFIG_REPORTE.idOficinaProductora}`);
+
   const cont = document.createElement('div');
   cont.id = 'ContenedorReporteContadores';
   cont.style.cssText = 'position:fixed; top:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:8px; padding:10px; box-shadow:0 2px 10px rgba(0,0,0,0.3); width:480px; font-family:sans-serif;';
@@ -165,7 +173,7 @@ function crearUIReporteContadores() {
       <span>📊 Reporte de contadores por usuario</span>
       <button id="btnCerrarReporteContadores" title="Cerrar panel" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; line-height:1; padding:0 4px;">✕</button>
     </div>
-    <button id="btnCargarFuncionarios" style="width:100%; padding:6px; background:#6b7280; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; margin-bottom:8px;">🔄 Cargar Funcionarios de mi oficina automáticamente</button>
+    <button id="btnCargarFuncionarios" style="width:100%; padding:6px; background:#6b7280; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; margin-bottom:8px;">🔄 Cargar Funcionarios</button>
     <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
       <label for="inputAnioReporte" style="font-size:12px; white-space:nowrap;">Año:</label>
       <input id="inputAnioReporte" type="number" value="${new Date().getFullYear()}" style="width:80px; padding:4px;">
@@ -200,22 +208,24 @@ function crearUIReporteContadores() {
 
   document.querySelector('#btnCargarFuncionarios').onclick = async () => {
     const btnCargar = document.querySelector('#btnCargarFuncionarios');
-    btnCargar.disabled = true;
-    btnCargar.textContent = '⏳ Consultando funcionarios...';
+    const idOficina = CONFIG_REPORTE.idOficinaProductora;
 
-    const lista = await obtenerListaFuncionarios();
+    btnCargar.disabled = true;
+    btnCargar.textContent = '⏳ Consultando...';
+
+    const lista = await obtenerListaFuncionarios(idOficina);
 
     if (lista.length) {
       USUARIOS_A_MONITOREAR = lista;
-      btnCargar.textContent = `✅ ${lista.length} funcionarios cargados`;
-      console.log(`✅ Se cargaron ${lista.length} funcionarios automáticamente.`, USUARIOS_A_MONITOREAR);
+      btnCargar.textContent = `✅ ${lista.length} cargados`;
+      console.log(`✅ Se cargaron ${lista.length} funcionarios de la oficina ${idOficina}.`, USUARIOS_A_MONITOREAR);
     } else {
-      btnCargar.textContent = '❌ No se pudo cargar, revisa la consola';
+      btnCargar.textContent = '❌ Error, revisa consola';
     }
 
     setTimeout(() => {
       btnCargar.disabled = false;
-      btnCargar.textContent = '🔄 Cargar Funcionarios de mi oficina automáticamente';
+      btnCargar.textContent = '🔄 Cargar Funcionarios';
     }, 3000);
   };
 
