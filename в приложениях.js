@@ -85,7 +85,10 @@ function crearUIDescargaDirecta() {
   cont.style.cssText = 'position:fixed; bottom:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:8px; padding:10px; box-shadow:0 2px 10px rgba(0,0,0,0.3); width:260px; font-family:sans-serif;';
 
   cont.innerHTML = `
-    <div id="EncabezadoDescargaDirecta" style="font-weight:bold; margin-bottom:6px; cursor:grab; user-select:none;">📎 Descarga directa de adjuntos</div>
+    <div id="EncabezadoDescargaDirecta" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:6px; cursor:grab; user-select:none;">
+      <span>📎 Descarga directa de adjuntos</span>
+      <button id="btnCerrarDescargaDirecta" title="Cerrar panel" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; line-height:1; padding:0 4px;">✕</button>
+    </div>
     <textarea id="txtIdcLote" placeholder="IDC (uno por línea o separados por coma)" style="width:100%; height:60px; margin-bottom:6px;"></textarea>
     <button id="btnDescargaDirecta" style="width:100%; padding:8px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📎 Descargar</button>
     <div id="ResumenDescargaDirecta" style="display:none; margin-top:8px; padding:6px 8px; border-radius:6px; font-size:12px; font-weight:bold;"></div>
@@ -93,6 +96,12 @@ function crearUIDescargaDirecta() {
   `;
   document.body.appendChild(cont);
   habilitarArrastreDirecto(cont, document.querySelector('#EncabezadoDescargaDirecta'));
+
+  document.querySelector('#btnCerrarDescargaDirecta').onclick = (e) => {
+    e.stopPropagation();
+    cont.remove();
+  };
+  document.querySelector('#btnCerrarDescargaDirecta').addEventListener('mousedown', (e) => e.stopPropagation());
 
   const mostrarResultado = (idc, exito) => {
     const contEstado = document.querySelector('#EstadoDescargaDirecta');
@@ -185,4 +194,3 @@ function habilitarArrastreDirecto(contenedor, agarre) {
 }
 
 crearUIDescargaDirecta();
-
