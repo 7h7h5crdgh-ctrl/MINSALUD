@@ -132,7 +132,10 @@ function crearUICierrePorComentario() {
   cont.style.cssText = 'position:fixed; bottom:20px; right:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:8px; padding:10px; box-shadow:0 2px 10px rgba(0,0,0,0.3); width:300px; font-family:sans-serif;';
 
   cont.innerHTML = `
-    <div id="EncabezadoCierreComentario" style="font-weight:bold; margin-bottom:6px; cursor:grab; user-select:none;">🗂️ Cierre masivo por comentario</div>
+    <div id="EncabezadoCierreComentario" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:6px; cursor:grab; user-select:none;">
+      <span>🗂️ Cierre masivo por comentario</span>
+      <button id="btnCerrarCierreComentario" title="Cerrar panel" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; line-height:1; padding:0 4px;">✕</button>
+    </div>
     <textarea id="txtIdcCierre" placeholder="IDC (uno por línea o separados por coma)" style="width:100%; height:55px; margin-bottom:6px;"></textarea>
     <textarea id="txtComentarioCierre" style="width:100%; height:70px; margin-bottom:6px; font-size:12px;">${CONFIG_CIERRE.comentarioDefault}</textarea>
     <button id="btnCerrarComentario" style="width:100%; padding:8px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🗂️ Cerrar por Comentario</button>
@@ -141,6 +144,12 @@ function crearUICierrePorComentario() {
   `;
   document.body.appendChild(cont);
   habilitarArrastreCierre(cont, document.querySelector('#EncabezadoCierreComentario'));
+
+  document.querySelector('#btnCerrarCierreComentario').onclick = (e) => {
+    e.stopPropagation();
+    cont.remove();
+  };
+  document.querySelector('#btnCerrarCierreComentario').addEventListener('mousedown', (e) => e.stopPropagation());
 
   const mostrarResultado = (idc, exito) => {
     const contEstado = document.querySelector('#EstadoCierreComentario');
@@ -230,4 +239,3 @@ function habilitarArrastreCierre(contenedor, agarre) {
 }
 
 crearUICierrePorComentario();
-
