@@ -68,20 +68,42 @@ function tdExtraerFlujoJSON(html) {
   }
 }
 
+// ---- función corregida: VALORESPUESTA puede venir como URL directa o como base64 ----
 async function tdObtenerPdfBlobUrl(nombreArchivo) {
-  if (!nombreArchivo) return null;
-  const rutaRepo = await tdFetchGet(TD_CONFIG.urlRutaRepo).then(r => r.json()).then(d => d.value);
+  if (!nombreArchivo) { console.warn('[TD] NOMBREARCHIVO vacío'); return null; }
+
+  const rutaRepoResp = await tdFetchGet(TD_CONFIG.urlRutaRepo).then(r => r.json());
+  const rutaRepo = rutaRepoResp.value ?? rutaRepoResp.VALOR ?? '';
+
+  const archivo = nombreArchivo.toLowerCase().endsWith('.pdf') ? nombreArchivo : `${nombreArchivo}.pdf`;
+
   const resp = await tdFetchPost(TD_CONFIG.urlPdfB64, {
     Ruta: rutaRepo + 'PDF\\DOC_DILIGENCIADO\\',
-    ArchivoNombre: `${nombreArchivo}.pdf`,
+    ArchivoNombre: archivo,
     RutaFria: 'NOPDF\\DOC_DILIGENCIADO\\',
   });
   const data = await resp.json();
-  if (!data.VALORESPUESTA) return null;
-  const binario = atob(data.VALORESPUESTA);
-  const bytes = new Uint8Array(binario.length);
-  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
-  return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  const valor = data.VALORESPUESTA;
+  if (!valor) { console.warn('[TD] Sin VALORESPUESTA:', data); return null; }
+
+  // Caso 1: VALORESPUESTA es una URL directa al PDF
+  if (typeof valor === 'string' && valor.startsWith('http')) {
+    const pdfResp = await fetch(valor, { credentials: 'same-origin' });
+    if (!pdfResp.ok) { console.warn('[TD] Fallo al descargar desde la URL, status:', pdfResp.status); return null; }
+    const blob = await pdfResp.blob();
+    return URL.createObjectURL(blob);
+  }
+
+  // Caso 2: VALORESPUESTA es base64
+  try {
+    const binario = atob(valor);
+    const bytes = new Uint8Array(binario.length);
+    for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  } catch (e) {
+    console.warn('[TD] VALORESPUESTA no es URL ni base64 válido:', valor);
+    return null;
+  }
 }
 
 async function tdConsultarTarea(idTarea) {
