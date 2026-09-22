@@ -2,19 +2,21 @@
 // PANEL DE SEGUIMIENTO DE TAREAS - CONTROLDOC (TareasDoc)
 // Consulta flujo de trabajo completo, sesión activa vs remitente real,
 // descarga por versión (cada paso del flujo), última versión vigente,
-// destinatarios/copias, y detección de estado ENVÍO EXITOSO.
+// destinatarios/copias, contador y descarga de adjuntos, panel minimizable.
 // USO: pegar en consola (F12) estando logueado en ControlDoc.
 // ==========================================
 
 const TD_CONFIG = {
-  urlValidar:   'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ValidarTraladosRadicados/',
-  urlCrearDoc:  'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/CrearDoc',
-  urlPdfB64:    'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/Base64DocumentoPdf',
-  urlRutaRepo:  'https://controldoc.minsalud.gov.co/Controldoc///Home/ObtenerValorLlave?key=RUTAREPOSITORIO',
-  urlDest:      'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerDestEntidades',
-  urlAdjuntos:  'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/AdjuntosByIdTareaDoc',
-  urlCopiasFun: 'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerCopiasFuncionarios',
-  urlCopiasEnt: 'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerCopiasEntidades',
+  urlValidar:        'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ValidarTraladosRadicados/',
+  urlCrearDoc:       'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/CrearDoc',
+  urlPdfB64:         'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/Base64DocumentoPdf',
+  urlRutaRepo:       'https://controldoc.minsalud.gov.co/Controldoc///Home/ObtenerValorLlave?key=RUTAREPOSITORIO',
+  urlDest:           'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerDestEntidades',
+  urlAdjuntos:       'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/AdjuntosByIdTareaDoc',
+  urlCopiasFun:      'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerCopiasFuncionarios',
+  urlCopiasEnt:      'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerCopiasEntidades',
+  urlBase64Doc:      'https://controldoc.minsalud.gov.co/Controldoc//Adjuntos/Base64Documento',
+  urlServirAdjunto:  'https://controldoc.minsalud.gov.co/Controldoc/Adjuntos/ServirAdjunto',
 };
 
 async function tdFetchPost(url, paramsObj) {
@@ -68,7 +70,29 @@ function tdExtraerFlujoJSON(html) {
   }
 }
 
-// ---- función corregida: VALORESPUESTA puede venir como URL directa o como base64 ----
+// Resuelve el "VALORESPUESTA" ya sea que venga como URL directa o como base64
+async function tdResolverBlobDesdeRespuesta(data) {
+  const valor = data.VALORESPUESTA;
+  if (!valor) return null;
+
+  if (typeof valor === 'string' && valor.startsWith('http')) {
+    const resp = await fetch(valor, { credentials: 'same-origin' });
+    if (!resp.ok) { console.warn('[TD] Fallo al descargar desde la URL, status:', resp.status); return null; }
+    return URL.createObjectURL(await resp.blob());
+  }
+
+  try {
+    const binario = atob(valor);
+    const bytes = new Uint8Array(binario.length);
+    for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes]));
+  } catch (e) {
+    console.warn('[TD] VALORESPUESTA no es URL ni base64 válido:', valor);
+    return null;
+  }
+}
+
+// ---- previsualización/descarga de la versión de PDF diligenciado ----
 async function tdObtenerPdfBlobUrl(nombreArchivo) {
   if (!nombreArchivo) { console.warn('[TD] NOMBREARCHIVO vacío'); return null; }
 
@@ -83,27 +107,47 @@ async function tdObtenerPdfBlobUrl(nombreArchivo) {
     RutaFria: 'NOPDF\\DOC_DILIGENCIADO\\',
   });
   const data = await resp.json();
-  const valor = data.VALORESPUESTA;
-  if (!valor) { console.warn('[TD] Sin VALORESPUESTA:', data); return null; }
+  return tdResolverBlobDesdeRespuesta(data);
+}
 
-  // Caso 1: VALORESPUESTA es una URL directa al PDF
-  if (typeof valor === 'string' && valor.startsWith('http')) {
-    const pdfResp = await fetch(valor, { credentials: 'same-origin' });
-    if (!pdfResp.ok) { console.warn('[TD] Fallo al descargar desde la URL, status:', pdfResp.status); return null; }
-    const blob = await pdfResp.blob();
-    return URL.createObjectURL(blob);
-  }
+// ---- descarga de adjuntos ----
+async function tdObtenerAdjuntoBlobUrl(adjunto) {
+  console.log('[TD] Objeto adjunto crudo:', adjunto);
 
-  // Caso 2: VALORESPUESTA es base64
-  try {
-    const binario = atob(valor);
-    const bytes = new Uint8Array(binario.length);
-    for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
-    return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-  } catch (e) {
-    console.warn('[TD] VALORESPUESTA no es URL ni base64 válido:', valor);
+  const rutaRepoResp = await tdFetchGet(TD_CONFIG.urlRutaRepo).then(r => r.json());
+  const rutaRepo = rutaRepoResp.value ?? rutaRepoResp.VALOR ?? '';
+
+  const archivo = adjunto.ARCHIVONOMBRE || adjunto.ARCHIVO || adjunto.NOMBREARCHIVO;
+  if (!archivo) {
+    console.warn('[TD] No se encontró ARCHIVONOMBRE en el objeto de arriba.');
     return null;
   }
+
+  const matchAnio = archivo.match(/_(\d{4})\d{10}/);
+  const anioActual = new Date().getFullYear();
+  const aniosCandidatos = [
+    ...(matchAnio ? [parseInt(matchAnio[1], 10)] : []),
+    anioActual, anioActual - 1,
+  ].filter((v, i, arr) => arr.indexOf(v) === i);
+
+  for (const anio of aniosCandidatos) {
+    const ruta = `${rutaRepo}ADJUNTOS\\${anio}\\`;
+    const resp = await tdFetchPost(TD_CONFIG.urlBase64Doc, {
+      Ruta: ruta,
+      ArchivoNombre: archivo,
+      RutaFria: `NOADJUNTOS\\${anio}\\`,
+    });
+    const data = await resp.json();
+    console.log(`[TD] Respuesta Base64Documento (año ${anio}):`, data);
+
+    if (data.RESPUESTA === false) continue;
+
+    const url = await tdResolverBlobDesdeRespuesta(data);
+    if (url) return url;
+  }
+
+  console.warn('[TD] No se encontró el archivo en ninguno de los años probados.');
+  return null;
 }
 
 async function tdConsultarTarea(idTarea) {
@@ -128,6 +172,8 @@ function tdEstadoGlobal(ultimoPaso) {
   };
 }
 
+let tdAdjuntosCache = [];
+
 function tdCrearPanel() {
   document.querySelector('#PanelSeguimientoTarea')?.remove();
   const cont = document.createElement('div');
@@ -136,16 +182,35 @@ function tdCrearPanel() {
   cont.innerHTML = `
     <div id="TD_Encabezado" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:10px; cursor:grab; user-select:none;">
       <span>📋 Flujo de Tarea — Controldoc</span>
-      <button id="TD_Cerrar" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer;">✕</button>
+      <span>
+        <button id="TD_Minimizar" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; margin-right:6px;" title="Minimizar">–</button>
+        <button id="TD_Cerrar" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer;">✕</button>
+      </span>
     </div>
-    <div style="display:flex; gap:6px; margin-bottom:10px;">
-      <input id="TD_Input" type="text" placeholder="IDTAREADOC (ej: 1488066)" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px;">
-      <button id="TD_Buscar" style="padding:6px 12px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Buscar</button>
+    <div id="TD_Cuerpo">
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <input id="TD_Input" type="text" placeholder="IDTAREADOC (ej: 466393)" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px;">
+        <button id="TD_Buscar" style="padding:6px 12px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Buscar</button>
+      </div>
+      <div id="TD_Contenido"></div>
     </div>
-    <div id="TD_Contenido"></div>
   `;
   document.body.appendChild(cont);
   tdHabilitarArrastre(cont, cont.querySelector('#TD_Encabezado'));
+
+  const btnMin = cont.querySelector('#TD_Minimizar');
+  const cuerpo = cont.querySelector('#TD_Cuerpo');
+  let minimizado = false;
+  btnMin.addEventListener('mousedown', e => e.stopPropagation());
+  btnMin.onclick = e => {
+    e.stopPropagation();
+    minimizado = !minimizado;
+    cuerpo.style.display = minimizado ? 'none' : 'block';
+    cont.style.width = minimizado ? 'auto' : '620px';
+    btnMin.textContent = minimizado ? '▢' : '–';
+    btnMin.title = minimizado ? 'Restaurar' : 'Minimizar';
+  };
+
   cont.querySelector('#TD_Cerrar').addEventListener('mousedown', e => e.stopPropagation());
   cont.querySelector('#TD_Cerrar').onclick = e => { e.stopPropagation(); cont.remove(); };
   cont.querySelector('#TD_Buscar').onclick = tdEjecutarBusqueda;
@@ -174,14 +239,18 @@ async function tdEjecutarBusqueda() {
   if (!idTarea) return;
   contenido.innerHTML = '<div style="padding:10px; color:#666;">⏳ Consultando...</div>';
 
-  let resultado;
+  let resultado, adjuntos = [];
   try {
-    resultado = await tdConsultarTarea(idTarea);
+    [resultado, adjuntos] = await Promise.all([
+      tdConsultarTarea(idTarea),
+      tdFetchGet(`${TD_CONFIG.urlAdjuntos}?IDTAREADOC=${idTarea}`).then(r => r.json()).catch(() => []),
+    ]);
   } catch (err) {
     contenido.innerHTML = `<div style="padding:10px; color:#ea580c;">❌ ${err.message}</div>`;
     return;
   }
 
+  tdAdjuntosCache = adjuntos || [];
   const { sesion, flujo } = resultado;
   const ultimoPaso = flujo[flujo.length - 1];
   const remitenteReal = flujo[0]?.FUNCIONARIOCREO || '—';
@@ -228,7 +297,7 @@ async function tdEjecutarBusqueda() {
     <div style="display:flex; flex-wrap:wrap; gap:6px;">
       <button id="TD_BtnPreviewPdf" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">👁 Previsualizar última versión</button>
       <button id="TD_BtnDescargarPdf" style="flex:1; padding:6px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer;">📄 Descargar última versión</button>
-      <button id="TD_BtnDestinatarios" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">👥 Destinatarios/Copias</button>
+      <button id="TD_BtnDestinatarios" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">👥 Destinatarios/Copias/Adjuntos (${tdAdjuntosCache.length})</button>
     </div>
   `;
 
@@ -257,21 +326,34 @@ async function tdEjecutarBusqueda() {
 }
 
 async function tdMostrarDestinatarios(idTarea) {
-  const [dest, adjuntos, copiasFunc, copiasEnt] = await Promise.all([
+  const [dest, copiasFunc, copiasEnt] = await Promise.all([
     tdFetchGet(`${TD_CONFIG.urlDest}?idtareadoc=${idTarea}`).then(r => r.json()),
-    tdFetchGet(`${TD_CONFIG.urlAdjuntos}?IDTAREADOC=${idTarea}`).then(r => r.json()),
     tdFetchGet(`${TD_CONFIG.urlCopiasFun}?idtareadoc=${idTarea}`).then(r => r.json()),
     tdFetchGet(`${TD_CONFIG.urlCopiasEnt}?idtareadoc=${idTarea}`).then(r => r.json()),
   ]);
+  const adjuntos = tdAdjuntosCache; // ya lo tenemos del conteo inicial, sin refetch
+
   document.querySelector('#TD_ModalDest')?.remove();
   const modal = document.createElement('div');
   modal.id = 'TD_ModalDest';
   modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.4); z-index:100000; display:flex; align-items:center; justify-content:center;';
+
   const lista = (titulo, arr) => `
     <b>${titulo} (${arr.length})</b>
     ${arr.length === 0 ? '<p style="color:#6b7280;"><i>Sin registros</i></p>' :
       arr.map(x => `<div style="padding:4px 0; border-bottom:1px solid #f3f4f6;">${x.NOMBRESAPELLIDOS || x.NOMBREARCHIVO || '—'} ${x.CORREO ? `— ${x.CORREO}` : ''}</div>`).join('')}
   `;
+
+  const listaAdjuntos = (arr) => `
+    <b>Adjuntos (${arr.length})</b>
+    ${arr.length === 0 ? '<p style="color:#6b7280;"><i>Sin registros</i></p>' :
+      arr.map((x, i) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid #f3f4f6;">
+          <span>${x.ARCHIVONOMBRE || x.ARCHIVO || x.NOMBREARCHIVO || '(sin nombre)'}</span>
+          <button class="td-adj-download" data-i="${i}" style="border:none; background:none; cursor:pointer;" title="Descargar">📥</button>
+        </div>`).join('')}
+  `;
+
   modal.innerHTML = `
     <div style="background:#fff; border-radius:8px; padding:16px; width:420px; max-height:80vh; overflow-y:auto;">
       <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
@@ -279,13 +361,24 @@ async function tdMostrarDestinatarios(idTarea) {
         <button id="TD_CerrarDest" style="background:none; border:none; font-size:16px; cursor:pointer;">✕</button>
       </div>
       ${lista('Destinatarios', dest)}
-      ${lista('Adjuntos', adjuntos)}
+      ${listaAdjuntos(adjuntos)}
       ${lista('Copias a funcionarios', copiasFunc)}
       ${lista('Copias a entidades', copiasEnt)}
     </div>
   `;
   document.body.appendChild(modal);
   modal.querySelector('#TD_CerrarDest').onclick = () => modal.remove();
+
+  modal.querySelectorAll('.td-adj-download').forEach(btn => {
+    btn.onclick = async () => {
+      const adj = adjuntos[parseInt(btn.dataset.i, 10)];
+      const url = await tdObtenerAdjuntoBlobUrl(adj);
+      if (!url) return alert('No se pudo obtener el adjunto. Revisa la consola (F12) para ver por qué.');
+      const a = document.createElement('a');
+      a.href = url; a.download = adj.ARCHIVONOMBRE || adj.ARCHIVO || 'adjunto';
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+  });
 }
 
 tdCrearPanel();
