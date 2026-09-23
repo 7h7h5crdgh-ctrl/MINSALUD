@@ -1,4 +1,117 @@
 // ════════════════════════════════════════════════════════════════
+// ═══ CONFIGURACIÓN CENTRAL DE DEPENDENCIAS ═══
+// Para agregar una nueva dependencia (subdirección/dirección), agrega
+// una entrada nueva aquí abajo. El resto del script (clasificador,
+// reasignación, filtros, UI) la toma automáticamente sin tocar nada más.
+//
+// Campos de cada entrada:
+//   nombre    -> nombre visible de la dependencia
+//   idOficina -> IDOFICINAPRODUCTORA en ControlDoc (necesario para reasignar).
+//                Si no lo sabes, corre cdBuscarOficinaPorNombre('texto') en
+//                la consola (con el panel ya cargado) para encontrarlo, y
+//                déjalo en null mientras tanto: el clasificador seguirá
+//                funcionando igual, solo la reasignación fallará con un
+//                mensaje claro hasta que lo completes.
+//   idUnidad  -> IDUNIDADADMINISTRATIVA (opcional; si se omite usa
+//                CD2_IDUNIDAD, el valor por defecto que comparten todas
+//                las dependencias existentes). El IDOFICINAPRODUCTORA por
+//                sí solo NO es único en ControlDoc — siempre va combinado
+//                con su IDUNIDADADMINISTRATIVA.
+//   color     -> color hexadecimal usado en botones y etiquetas
+//   emoji     -> ícono que acompaña el nombre en toda la interfaz
+//   palabras  -> palabras/frases clave separadas por comas, usadas por el
+//                clasificador automático (también editables luego desde
+//                el panel, en "⚙️ Configuración de Palabras Clave")
+// ════════════════════════════════════════════════════════════════
+
+const CONFIG_DEPENDENCIAS = {
+  transmisibles: {
+    nombre: 'Enfermedades Transmisibles', idOficina: 41, color: '#dc2626', emoji: '🦠',
+    palabras: 'FIEBRE AMARILLA, LEPRA, ZOONOSIS, ETV, ENFERMEDADES TRANSMITIDAS POR VECTORES, VECTORES, VECTOR, COLVOL, HANSEN, TUBERCULOSIS, MALARIA, DENGUE, VACUNACION, VACUNACIÓN, VACUNA, VACUNAS, PAI, ZIKA, PAIWEB, RED DE FRIO, RED DE FRÍO, CHAGAS, CUIDADOCHAGAS, CUIDADO CHAGAS, BIOLOGICOS, BIOLÓGICOS, LEY DE MODERNIZACIÓN, LEY DE MODERNIZACION, LEY 2406, ENFERMEDADES TROPICALES, TROPICALES, TRACOMA, SARAMPIÓN, SARAMPION, TOLDILLOS, LEISHMANIASIS, HEPATITIS A, HEPATITIS B, COVID, T-080, T 080',
+  },
+  noTransmisibles: {
+    nombre: 'Enfermedades No Transmisibles', idOficina: 45, color: '#7c3aed', emoji: '❤️',
+    palabras: 'CANCER, CÁNCER, DIABETES, HIPERTENSION, HIPERTENSIÓN, OBESIDAD, TABACO, NICOTINA, VAPEADORES, VAPEADOR, ENFERMEDADES CRONICAS, ENFERMEDADES CRÓNICAS, ENFERMEDADES HUERFANAS, ENFERMEDADES HUÉRFANAS, ENFERMEDADES RARAS, ETIQUETADO, EMPAQUETADO, CIGARRILOS, CIGARRILLO, BUCAL, SALUD BUCAL, SALUD VISUAL, ASMA, CIGARRILLO ELECTRICO, CIGARRILLO ELÉCTRICO, ALIMENTACIÓN SALUDABLE, ALIMENTACION SALUDABLE',
+  },
+  saludAmbiental: {
+    nombre: 'Salud Ambiental y Cambio Climático', idOficina: 49, color: '#059669', emoji: '🌱',
+    palabras: 'AMBIENTE, CAMBIO CLIMATICO, CAMBIO CLIMÁTICO, CALIDAD DEL AIRE, RESIDUOS, AGUA POTABLE, SANEAMIENTO, AGUA PARA EL CONSUMO HUMANO, PISCINAS, PISCINA, CADAVER, CADÁVER, PESTISIDAS, MINERIA ILEGAL, MINERÍA ILEGAL, T-236, T 236, GLIFOSATO, TANATOPRAXIA, INCINERACIÓN, INCINERACION, CREMACIÓN, CREMACION, RESIDUOS, PISA, POLÍTICA INTEGRAL DE SALUD AMBIENTAL, POLITICA INTEGRAL DE SALUD AMBIENTAL, SUISA, SISTEMA UNIFICADO DE INFORMACIÓN DE SALUD AMBIENTAL, SISTEMA UNIFICADO DE INFORMACION DE SALUD AMBIENTAL, SANEAMIENTO BASICO, SANEAMIENTO BÁSICO, PIGCCS, PLAN INTEGRAL DE GESTIÓN DEL CAMBIO CLIMATICO DEL SECTOR SALUD, PLAN INTEGRAL DE GESTION DEL CAMBIO CLIMATICO DEL SECTOR SALUD, RUIDO, COSMETICOS, COSMÉTICOS, GETSA, GESTIÓN TERRITORIAL EN SALUD AMBIENTAL, GESTION TERRITORIAL EN SALUD AMBIENTAL, VACUNA ANTIRRABICA, VACUNA ANTIRRÁBICA, PERRO, PERROS, GATO, GATOS, COTSA, CONSEJOS TERRITORIALES DE SALUD AMBIENTAL CONASA, SEGURIDAD VIAL, RESOLUCIÓN 0234 DE 2026, RESOLUCION 0234 DE 2026, RESOLUCIÓN 0929 DE 2026, RESOLUCION 0929 DE 2026, PNEET, CALIDAD DEL AIRE EN EL INTERIOR, SENTENCIA T614, T-614, T 614, PTACCA, PLANES TERRITORIALES EN ADAPTACIÓN AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLANES TERRITORIALES EN ADAPTACION AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLAGISIDAS, PESTISIDAS, RESIDUOS, AGUAS RESIDUALES, CEMENTERIOS, ENTORNOS SALUDABLES, DECRETO 1085 DE 2021, EISA, ESTRATEGIA INTEGRADORA DE SALUD AMBIENTAL, MERCURIO, METALES, T-622 DE 2016, T 622, IPIAC, ',
+  },
+  nutricion: {
+    nombre: 'Nutrición, Alimentación y Soberanía', idOficina: 53, color: '#d97706', emoji: '🍎',
+    palabras: 'ALIMENTACION ESCOLAR, ALIMENTACIÓN ESCOLAR, DESNUTRICION, DESNUTRICIÓN, LACTANCIA, SOBERANIA ALIMENTARIA, SOBERANÍA ALIMENTARIA',
+  },
+  promocion: {
+    nombre: 'Promoción de la Salud', idOficina: 130, color: '#0891b2', emoji: '💙',
+    palabras: 'VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
+  },
+  saludMental: {
+    nombre: 'Salud Mental y Convivencia', idOficina: 132, idUnidad: 2, color: '#9333ea', emoji: '🧠',
+    palabras: 'SALUD MENTAL, CONVIVENCIA, CONVIVENCIA SOCIAL, PREVENCION DEL SUICIDIO, PREVENCIÓN DEL SUICIDIO, CONSUMO DE SUSTANCIAS PSICOACTIVAS, SUSTANCIAS PSICOACTIVAS, SALUD MENTAL Y CONVIVENCIA',
+  },
+  equiposbasicos: {
+    nombre: 'Subdireccion de Fortalecimiento del Acceso a la Salud y Equipos Basicos', idOficina: 141, idUnidad: 2, color: '#93c5fd', emoji: '🚑',
+    palabras: 'EQUIPOS BÁSICOS, EQUIPOS BASICOS, EBS',
+  },
+  ciudadanias: {
+    nombre: 'Direccion de Ciudadanias, Equidad y Salud', idOficina: 133, idUnidad: 2, color: '#facc15', emoji: '👥',
+    palabras: 'ALERTA ROSA, LEY 2326 DE 2023',
+  },
+};
+// --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLENAR LA NUEVA ENTRADA DE LA SUBDIRECCIÓN/DIRECCIÓN]
+
+// Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
+// masivos ("Reasignar clasificados" y "Reasignación Manual"). 3 es un punto
+// de partida seguro: sube el número solo si ya probaste con
+// probarConcurrenciaSegura() (ver más abajo) que el servidor lo tolera bien.
+const CONCURRENCIA_MAXIMA = 3;
+
+// Corre `tareaFn` sobre cada elemento de `items`, con como máximo `limite`
+// tareas en vuelo al mismo tiempo (en vez de esperar a que cada una termine
+// antes de lanzar la siguiente). `onProgreso(completados, total)` se llama
+// cada vez que una tarea termina, para poder actualizar la UI en vivo.
+async function ejecutarConPool(items, limite, tareaFn, onProgreso) {
+  let indice = 0;
+  let completados = 0;
+  const total = items.length;
+
+  async function trabajador() {
+    while (indice < total) {
+      const miIndice = indice++;
+      const item = items[miIndice];
+      try {
+        await tareaFn(item);
+      } finally {
+        completados++;
+        if (onProgreso) onProgreso(completados, total);
+      }
+    }
+  }
+
+  const trabajadores = Array.from({ length: Math.min(limite, total) }, () => trabajador());
+  await Promise.all(trabajadores);
+}
+
+// Prueba de carga NO destructiva: dispara varias llamadas de solo lectura
+// (buscar jefe de una oficina) en paralelo y mide cuántas tolera el servidor
+// sin fallar y qué tan rápido responde, sin mover ni un solo documento.
+// Úsalo así en la consola: probarConcurrenciaSegura()
+async function probarConcurrenciaSegura(nivelesAProbar = [1, 3, 5, 8, 12]) {
+  const url = 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios?IDUNIDADADMINISTRATIVA=2&IDOFICINAPRODUCTORA=41&IDCARGO=2&NOMBRES=&APELLIDOS=&ListFuncSel=[]&ListFuncCop=[]&IDGRUPOTRABAJO=0&PROCESOSENA=&PROCEDENCIA=&BUSCARINACTIVO=NO&API=';
+  for (const n of nivelesAProbar) {
+    const inicio = performance.now();
+    const resultados = await Promise.allSettled(
+      Array.from({ length: n }, () => fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }))
+    );
+    const ms = Math.round(performance.now() - inicio);
+    const exitosos = resultados.filter(r => r.status === 'fulfilled' && r.value.ok).length;
+    const fallidos = n - exitosos;
+    console.log(`[Prueba] Concurrencia ${n}: ${exitosos} ok / ${fallidos} fallidos — ${ms}ms total (${Math.round(ms / n)}ms promedio)`);
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
 // ═══ SCRIPT 1: PANEL DE SEGUIMIENTO DE DOCUMENTOS ═══
 // ════════════════════════════════════════════════════════════════
 
@@ -9,6 +122,7 @@ const CD_CONFIG = {
   urlDocsAsociados: 'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/ListarDocumentosAsociados',
   urlImagenB64:     'https://controldoc.minsalud.gov.co/Controldoc//Documentos/IMAGENB64byIDDOCUMENTO/',
   urlGuardarZip:    'https://controldoc.minsalud.gov.co/Controldoc//Gestion/GuardarAdjuntosZIP',
+  urlOficinas:      'https://controldoc.minsalud.gov.co/ControlDoc/Parametrizacion/OFICINASPRODUCTORASObtener',
 };
 
 const CD_BUSQUEDA_DEFAULTS = {
@@ -112,6 +226,19 @@ async function cdObtenerAsociados(idDocumento) {
   return arr || [];
 }
 
+// Ayuda a encontrar el IDOFICINAPRODUCTORA de una dependencia nueva.
+// Úsalo así en la consola, con el panel ya cargado:
+//   cdBuscarOficinaPorNombre('SALUD MENTAL')
+async function cdBuscarOficinaPorNombre(textoBusqueda) {
+  const resp = await cdFetchGet(CD_CONFIG.urlOficinas);
+  const data = await resp.json();
+  const coincidencias = (data || []).filter(o => (o.NOMBRE || '').toUpperCase().includes(textoBusqueda.toUpperCase()));
+  console.log(`[Config] Coincidencias para "${textoBusqueda}":`, coincidencias.map(o => ({
+    IDOFICINAPRODUCTORA: o.IDOFICINAPRODUCTORA, NOMBRE: o.NOMBRE, IDUNIDADADMINISTRATIVA: o.IDUNIDADADMINISTRATIVA,
+  })));
+  return coincidencias;
+}
+
 function cdEstadoGlobal(pasoReciente, strEstadoDocumento) {
   const estadoFlujo = (pasoReciente?.ESTADOFLUJO || '').toUpperCase().trim();
   if (estadoFlujo.includes('EXITOSA')) return { texto: 'Gestión exitosa', color: '#16a34a', fondo: '#dcfce7' };
@@ -120,84 +247,73 @@ function cdEstadoGlobal(pasoReciente, strEstadoDocumento) {
   return { texto: estadoFlujo, color: '#92400e', fondo: '#fef3c7' };
 }
 
+function cdSanitizarBase64(str) {
+  if (typeof str !== 'string') return '';
+  let limpio = str.trim();
+  if (limpio.startsWith('"') && limpio.endsWith('"')) limpio = limpio.slice(1, -1);
+  limpio = limpio.replace(/[\r\n\s]/g, '');
+  limpio = limpio.replace(/\\r/g, '').replace(/\\n/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+
+  const idxComa = limpio.lastIndexOf(',');
+  if (idxComa !== -1 && idxComa > limpio.length - 10) {
+    const sufijo = limpio.slice(idxComa + 1);
+    if (/^[a-zA-Z0-9]{1,6}$/.test(sufijo)) {
+      limpio = limpio.slice(0, idxComa);
+    }
+  }
+  return limpio;
+}
+
 function cdBase64APdfBlob(base64) {
-  const binario = atob(base64);
+  const limpio = cdSanitizarBase64(base64);
+  const binario = atob(limpio);
   const bytes = new Uint8Array(binario.length);
   for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
-// ---- CORREGIDA: maneja JSON con URL directa, JSON con base64, o texto plano con base64 ----
-
 async function cdObtenerPdfBlobUrl(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlImagenB64, { IDDOCUMENTO: idDocumento });
   const textoCrudo = await resp.text();
 
-  // Caso 1: la respuesta es JSON con VALORESPUESTA (objeto)
   let data = null;
   try { data = JSON.parse(textoCrudo); } catch (e) { /* no era JSON válido */ }
 
+  let candidato = null;
+  let urlDirecta = null;
+
   if (data && typeof data === 'object' && data.VALORESPUESTA) {
-    console.log('[CD] Respuesta IMAGENB64byIDDOCUMENTO (JSON objeto):', data);
     const valor = data.VALORESPUESTA;
     if (typeof valor === 'string' && valor.startsWith('http')) {
-      const pdfResp = await fetch(valor, { credentials: 'same-origin' });
-      if (!pdfResp.ok) { console.warn('[CD] Fallo al descargar desde URL, status:', pdfResp.status); return null; }
-      return URL.createObjectURL(await pdfResp.blob());
+      urlDirecta = valor;
+    } else {
+      candidato = String(valor);
     }
-    const valorLimpio = String(valor).trim();
-    if (valorLimpio.startsWith('JVBERi0')) {
-      return URL.createObjectURL(cdBase64APdfBlob(valorLimpio));
-    }
-    console.warn('[CD] VALORESPUESTA no es URL ni parece base64 de PDF:', valorLimpio.slice(0, 100));
-    return null;
+  } else if (typeof data === 'string') {
+    candidato = data;
+  } else if (data === null) {
+    candidato = textoCrudo;
   }
 
-  // Caso 2: JSON.parse devolvió directamente un string (base64 entre comillas)
-  if (typeof data === 'string') {
-    const limpio = data.trim();
-    if (limpio.startsWith('JVBERi0')) {
+  if (urlDirecta) {
+    const pdfResp = await fetch(urlDirecta, { credentials: 'same-origin' });
+    if (!pdfResp.ok) { console.warn('[CD] Fallo al descargar desde URL, status:', pdfResp.status); return null; }
+    return URL.createObjectURL(await pdfResp.blob());
+  }
+
+  if (candidato) {
+    const limpio = cdSanitizarBase64(candidato);
+    console.log('[CD] Candidato base64 — inicio:', limpio.slice(0, 40), '| fin:', limpio.slice(-40), '| longitud:', limpio.length);
+    try {
       return URL.createObjectURL(cdBase64APdfBlob(limpio));
+    } catch (e) {
+      console.warn('[CD] Error al decodificar base64:', e.message, '— primeros 300 caracteres de la respuesta cruda:', textoCrudo.slice(0, 300));
+      return null;
     }
   }
 
-  // Caso 3: texto plano, sin envoltorio JSON — comprobar directamente sin regex
-  // (evita el RangeError: nunca "buscamos" dentro de la cadena completa, solo
-  // comparamos el inicio, que es una operación O(1) sin backtracking)
-  const textoLimpio = textoCrudo.trim().replace(/^"|"$/g, '');
-  if (textoLimpio.startsWith('JVBERi0')) {
-    return URL.createObjectURL(cdBase64APdfBlob(textoLimpio));
-  }
-
-  console.warn('[CD] No se reconoció JSON ni base64 de PDF en la respuesta. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
+  console.warn('[CD] No se reconoció ningún formato válido. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
   return null;
-}
-  // Caso 2: JSON.parse devolvió directamente un string (base64 entre comillas)
-  if (typeof data === 'string') {
-    const limpio = data.trim();
-    if (limpio.startsWith('JVBERi0')) {
-      return URL.createObjectURL(cdBase64APdfBlob(limpio));
-    }
-  }
-
-  // Caso 3: texto plano, sin envoltorio JSON — comprobar directamente sin regex
-  // (evita el RangeError: nunca "buscamos" dentro de la cadena completa, solo
-  // comparamos el inicio, que es una operación O(1) sin backtracking)
-  const textoLimpio = textoCrudo.trim().replace(/^"|"$/g, '');
-  if (textoLimpio.startsWith('JVBERi0')) {
-    return URL.createObjectURL(cdBase64APdfBlob(textoLimpio));
-  }
-
-  console.warn('[CD] No se reconoció JSON ni base64 de PDF en la respuesta. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
-  return null;
-}
-  const coincidencia = textoCrudo.match(/[A-Za-z0-9+/=]{200,}/);
-  const base64 = coincidencia ? coincidencia[0] : null;
-  if (!base64 || !base64.startsWith('JVBERi0')) {
-    console.warn('[CD] No se reconoció JSON ni base64 en la respuesta:', textoCrudo.slice(0, 300));
-    return null;
-  }
-  return URL.createObjectURL(cdBase64APdfBlob(base64));
 }
 
 async function cdPrevisualizarPdf(idDocumento) {
@@ -215,7 +331,6 @@ async function cdDescargarPdf(idDocumento) {
   URL.revokeObjectURL(url);
 }
 
-// ---- CORREGIDA: maneja URL directa además del comportamiento original ----
 async function cdDescargarAdjuntos(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlGuardarZip, { IDDOCUMENTO: idDocumento, DILIGENCIADOS: 'NO' });
   const data = await resp.json();
@@ -429,23 +544,22 @@ async function cdMostrarAsociados(idDocumento) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// ═══ SCRIPT 2: MOTOR DE REASIGNACIÓN (con validación diagnóstica) ═══
+// ═══ SCRIPT 2: MOTOR DE REASIGNACIÓN (uno o varios destinos, verificación real por bandeja) ═══
 // ════════════════════════════════════════════════════════════════
 
 const CD2_CONFIG = {
-  urlBandeja:      'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/DOCUMENTOSGESTIONObtenerbyESTADOFLUJOeIDUSUARIOASIGNO',
-  urlFuncionarios: 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios',
-  urlTramitar:     'https://controldoc.minsalud.gov.co/Controldoc//Gestion/TRAMITARENUNSOLOMETODO',
-  urlValidar:      'https://controldoc.minsalud.gov.co/Controldoc//Gestion/VALIDARUSUARIOSESTADOSI',
+  urlBandeja:          'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/DOCUMENTOSGESTIONObtenerbyESTADOFLUJOeIDUSUARIOASIGNO',
+  urlFuncionarios:     'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios',
+  urlTramitar:         'https://controldoc.minsalud.gov.co/Controldoc//Gestion/TRAMITARENUNSOLOMETODO',
+  urlValidar:          'https://controldoc.minsalud.gov.co/Controldoc//Gestion/VALIDARUSUARIOSESTADOSI',
+  urlCerrarComentario: 'https://controldoc.minsalud.gov.co/Controldoc//Gestion/DOCUMENTOSGESTIONActualizarAlTramitarByGESTION/',
 };
 
-const CD2_SUBDIRECCIONES = {
-  transmisibles:     { nombre: 'Enfermedades Transmisibles',         idOficina: 41,  color: '#dc2626', emoji: '🦠' },
-  noTransmisibles:   { nombre: 'Enfermedades No Transmisibles',      idOficina: 45,  color: '#7c3aed', emoji: '❤️' },
-  saludAmbiental:    { nombre: 'Salud Ambiental y Cambio Climático', idOficina: 49,  color: '#059669', emoji: '🌱' },
-  nutricion:         { nombre: 'Nutrición, Alimentación y Soberanía', idOficina: 53, color: '#d97706', emoji: '🍎' },
-  promocion:         { nombre: 'Promoción de la Salud',               idOficina: 130, color: '#0891b2', emoji: '💙' },
-};
+const CD2_IDACCION_GESTION_EXITOSA = 4;
+const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
+const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
+
+const CD2_SUBDIRECCIONES = CONFIG_DEPENDENCIAS;
 const CD2_IDUNIDAD = 2;
 
 async function cd2Post(url, paramsObj) {
@@ -483,10 +597,12 @@ async function cd2BuscarEnBandeja(idDocumento) {
 }
 
 const cd2CacheJefes = {};
-async function cd2ObtenerJefe(idOficina) {
-  if (cd2CacheJefes[idOficina]) return cd2CacheJefes[idOficina];
+async function cd2ObtenerJefe(idOficina, idUnidad) {
+  idUnidad = idUnidad ?? CD2_IDUNIDAD; // funciona tanto si idUnidad es undefined como si es null
+  const claveCache = `${idUnidad}-${idOficina}`;
+  if (cd2CacheJefes[claveCache]) return cd2CacheJefes[claveCache];
   const params = {
-    IDUNIDADADMINISTRATIVA: CD2_IDUNIDAD, IDOFICINAPRODUCTORA: idOficina, IDCARGO: 2,
+    IDUNIDADADMINISTRATIVA: idUnidad, IDOFICINAPRODUCTORA: idOficina, IDCARGO: 2,
     NOMBRES: '', APELLIDOS: '', ListFuncSel: '[]', ListFuncCop: '[]',
     IDGRUPOTRABAJO: 0, PROCESOSENA: '', PROCEDENCIA: '', BUSCARINACTIVO: 'NO', API: '',
   };
@@ -494,7 +610,7 @@ async function cd2ObtenerJefe(idOficina) {
   const resp = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
   const data = await resp.json();
   if (!data || !data.length) throw new Error(`No se encontró jefe para la oficina ${idOficina}`);
-  cd2CacheJefes[idOficina] = data[0];
+  cd2CacheJefes[claveCache] = data[0];
   return data[0];
 }
 
@@ -507,15 +623,13 @@ async function cd2ValidarFuncionario(funcionario) {
   }
 }
 
-async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
-  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
-  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
-  const registro = await cd2BuscarEnBandeja(idDocumento);
-  const jefe = await cd2ObtenerJefe(sub.idOficina);
+// Construye el DOCUMENTOGESTION base a partir del registro en bandeja
+// (info del lado del remitente/documento, compartida sin importar el
+// destino o destinos a los que se vaya a tramitar).
+function cd2ConstruirDocumentoGestion(registro, comentario) {
   const ahoraISO = new Date().toISOString();
   const fechaVieja = 'Sun Dec 17 1995 00:00:00 GMT-0500 (hora estándar de Colombia)';
-
-  const documentoGestion = {
+  return {
     IDDOCUMENTO: registro.IDDOCUMENTO, FECHAASIGNO: ahoraISO,
     IDUNIDADADMINISTRATIVA: registro.IDUNIDADADMINISTRATIVA, IDOFICINAPRODUCTORA: registro.IDOFICINAPRODUCTORA,
     IDACCION: 3, IDINSTRUCCION: 0, DIAS: 0, COMENTARIO: comentario, HORAS: 0,
@@ -528,13 +642,11 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     BPMDECISIONES: '', IDBMPPROCESOITEM_DEVOLVER: 0,
     IDTIPOLOGIADOCUMENTAL_TRDC: registro.IDTIPOLOGIADOCUMENTAL_TRDC, RADICADO: registro.RADICADO,
   };
+}
 
-  const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
-
-  const validacion = await cd2ValidarFuncionario(funcionario);
-  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
-
-  const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: [funcionario] } });
+async function cd2EnviarTramite(registro, listaFuncionarios, comentario) {
+  const documentoGestion = cd2ConstruirDocumentoGestion(registro, comentario);
+  const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: listaFuncionarios } });
   params.append('ESTADOFLUJO', 'TRANSITO');
   params.append('IDDOCUMENTOGESTION', registro.IDDOCUMENTOGESTION);
   params.append('COMENTARIO', comentario);
@@ -544,24 +656,131 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
     body: params.toString(),
   });
-  const data = await resp.json();
-  console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO para IDC ${idDocumento}:`, data);
-  return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion };
+  return resp.json();
 }
 
-async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario) {
-  const resultados = { exitosos: [], fallidos: [] };
-  for (const id of listaIds) {
-    try {
-      const r = await cd2ReasignarDocumento(id.trim(), claveSubdireccion, comentario);
-      const ok = r.resultado && r.resultado.RESPUESTA !== false;
-      console.log(ok ? '✅' : '⚠️', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado);
-      if (ok) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
-    } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
-    await new Promise(res => setTimeout(res, 1200));
+// Reasigna un IDC a UNA sola dependencia (usado por el botón 🚀 de cada fila
+// y por "Reasignar clasificados").
+async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
+  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
+  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
+  if (sub.idOficina == null) {
+    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
   }
+  const registro = await cd2BuscarEnBandeja(idDocumento);
+  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
+  const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
+
+  const validacion = await cd2ValidarFuncionario(funcionario);
+  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
+
+  const data = await cd2EnviarTramite(registro, [funcionario], comentario);
+  console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO para IDC ${idDocumento}:`, data);
+
+  // Verificación real de éxito: si el documento ya no aparece en tu bandeja
+  // "SIN INICIAR TRAMITE", significa que el trámite sí lo movió de verdad —
+  // esto es más confiable que la validación previa, que puede decir
+  // "funcionario inactivo" incluso cuando el trámite sí se completa bien.
+  let movioBandeja = false;
+  try {
+    await cd2BuscarEnBandeja(idDocumento);
+  } catch (e) {
+    movioBandeja = true;
+  }
+
+  return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
+}
+
+// Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
+// (el mismo mecanismo que usa "Buscador de Usuarios" en la interfaz cuando
+// seleccionas varios destinatarios y le das "Agregar Todos").
+async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, comentario) {
+  const subs = clavesSubdirecciones.map(clave => {
+    const sub = CD2_SUBDIRECCIONES[clave];
+    if (!sub) throw new Error('Subdirección no reconocida: ' + clave);
+    if (sub.idOficina == null) {
+      throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS.`);
+    }
+    return sub;
+  });
+
+  const registro = await cd2BuscarEnBandeja(idDocumento);
+
+  const destinos = [];
+  for (const sub of subs) {
+    const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
+    destinos.push({ sub, jefe });
+  }
+
+  const listaFuncionarios = destinos.map(({ jefe }) => ({ ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true }));
+
+  const validaciones = [];
+  for (const funcionario of listaFuncionarios) {
+    const v = await cd2ValidarFuncionario(funcionario);
+    validaciones.push({ nombre: funcionario.NOMBRESAPELLIDOS, validacion: v });
+    console.log(`[CD2] Validación funcionario (${funcionario.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, v);
+  }
+
+  const data = await cd2EnviarTramite(registro, listaFuncionarios, comentario);
+  console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO (multi-destino) para IDC ${idDocumento}:`, data);
+
+  let movioBandeja = false;
+  try {
+    await cd2BuscarEnBandeja(idDocumento);
+  } catch (e) {
+    movioBandeja = true;
+  }
+
+  return {
+    idDocumento,
+    destinos: destinos.map(({ sub, jefe }) => ({ nombre: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
+    resultado: data, validaciones, movioBandeja,
+  };
+}
+
+async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentario, onProgreso) {
+  const resultados = { exitosos: [], fallidos: [] };
+  await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
+    const id = idRaw.trim();
+    try {
+      const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
+      console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + '), r.resultado);
+      if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
+    } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
+  }, onProgreso);
   console.log(`\n🏁 Lote completo. ✅ ${resultados.exitosos.length} — ❌ ${resultados.fallidos.length}`);
   return resultados;
+}
+
+// Cierre por comentario: no necesita jefe ni validación, solo el
+// IDDOCUMENTOGESTION (que cd2BuscarEnBandeja ya resuelve) y un POST directo.
+async function cd2CerrarPorComentario(idDocumento, comentario) {
+  const registro = await cd2BuscarEnBandeja(idDocumento);
+  const params = new URLSearchParams({
+    'actualizarTramite[DOCUMENTOGESTION][IDDOCUMENTO]': registro.IDDOCUMENTO,
+    'actualizarTramite[DOCUMENTOGESTION][IDACCION]': CD2_IDACCION_GESTION_EXITOSA,
+    'actualizarTramite[DOCUMENTOGESTION][ESTADOFLUJO]': 'GESTION EXITOSA',
+    'actualizarTramite[DOCUMENTOGESTION][COMENTARIO]': comentario,
+    'actualizarTramite[DOCUMENTOGESTION][DOCGESGENERO]': '',
+    'actualizarTramite[DOCUMENTOGESTION][TRAMITADO]': 'SI',
+    'actualizarTramite[DOCUMENTOGESTION][strIDDOCUMENTOSGESTION]': registro.IDDOCUMENTOGESTION,
+  });
+  const resp = await fetch(CD2_CONFIG.urlCerrarComentario, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+    body: params.toString(),
+  });
+  const data = await resp.json();
+  console.log(`[CD2] Respuesta cierre por comentario para IDC ${idDocumento}:`, data);
+
+  let movioBandeja = false;
+  try {
+    await cd2BuscarEnBandeja(idDocumento);
+  } catch (e) {
+    movioBandeja = true;
+  }
+
+  return { idDocumento, resultado: data, movioBandeja };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -570,22 +789,7 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario) {
 
 const CD3_CONFIG = { urlBandeja: 'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/DOCUMENTOSGESTIONObtenerbyESTADOFLUJOeIDUSUARIOASIGNO' };
 
-const CD3_SUBDIRECCIONES = {
-  transmisibles:   { nombre: 'Enfermedades Transmisibles',          color: '#dc2626', emoji: '🦠',
-    palabras: 'FIEBRE AMARILLA, LEPRA, ZOONOSIS, ETV, ENFERMEDADES TRANSMITIDAS POR VECTORES, VECTORES, VECTOR, COLVOL, HANSEN, TUBERCULOSIS, MALARIA, DENGUE, VACUNACION, VACUNACIÓN, VACUNA, VACUNAS, PAI, ZIKA, PAIWEB, RED DE FRIO, RED DE FRÍO, CHAGAS, CUIDADOCHAGAS, CUIDADO CHAGAS, BIOLOGICOS, BIOLÓGICOS, LEY DE MODERNIZACIÓN, LEY DE MODERNIZACION, LEY 2406, ENFERMEDADES TROPICALES, TROPICALES, TRACOMA, SARAMPIÓN, SARAMPION, TOLDILLOS, LEISHMANIASIS, HEPATITIS A, HEPATITIS B, COVID, T-080, T 080'},
-
-  noTransmisibles: { nombre: 'Enfermedades No Transmisibles',       color: '#7c3aed', emoji: '❤️',
-    palabras: 'CANCER, CÁNCER, DIABETES, HIPERTENSION, HIPERTENSIÓN, OBESIDAD, TABACO, NICOTINA, VAPEADORES, VAPEADOR, ENFERMEDADES CRONICAS, ENFERMEDADES CRÓNICAS, ENFERMEDADES HUERFANAS, ENFERMEDADES HUÉRFANAS, ENFERMEDADES RARAS, ETIQUETADO, EMPAQUETADO, CIGARRILOS, CIGARRILLO, BUCAL, SALUD BUCAL, SALUD VISUAL, ASMA, CIGARRILLO ELECTRICO, CIGARRILLO ELÉCTRICO, ALIMENTACIÓN SALUDABLE, ALIMENTACION SALUDABLE' },
-
-  saludAmbiental:  { nombre: 'Salud Ambiental y Cambio Climático',  color: '#059669', emoji: '🌱',
-    palabras: 'CAMBIO CLIMATICO, CAMBIO CLIMÁTICO, CALIDAD DEL AIRE, RESIDUOS, AGUA POTABLE, SANEAMIENTO, AGUA PARA EL CONSUMO HUMANO, PISCINAS, PISCINA, CADAVER, CADÁVER, PESTISIDAS, MINERIA ILEGAL, MINERÍA ILEGAL, T-236, T 236, GLIFOSATO, TANATOPRAXIA, INCINERACIÓN, INCINERACION, CREMACIÓN, CREMACION, RESIDUOS, PISA, POLÍTICA INTEGRAL DE SALUD AMBIENTAL, POLITICA INTEGRAL DE SALUD AMBIENTAL, SUISA, SISTEMA UNIFICADO DE INFORMACIÓN DE SALUD AMBIENTAL, SISTEMA UNIFICADO DE INFORMACION DE SALUD AMBIENTAL, SANEAMIENTO BASICO, SANEAMIENTO BÁSICO, PIGCCS, PLAN INTEGRAL DE GESTIÓN DEL CAMBIO CLIMATICO DEL SECTOR SALUD, PLAN INTEGRAL DE GESTION DEL CAMBIO CLIMATICO DEL SECTOR SALUD, RUIDO, COSMETICOS, COSMÉTICOS, GETSA, GESTIÓN TERRITORIAL EN SALUD AMBIENTAL, GESTION TERRITORIAL EN SALUD AMBIENTAL, VACUNA ANTIRRABICA, VACUNA ANTIRRÁBICA, PERRO, PERROS, GATO, GATOS, COTSA, CONSEJOS TERRITORIALES DE SALUD AMBIENTAL CONASA, SEGURIDAD VIAL, RESOLUCIÓN 0234 DE 2026, RESOLUCION 0234 DE 2026, RESOLUCIÓN 0929 DE 2026, RESOLUCION 0929 DE 2026, PNEET, CALIDAD DEL AIRE EN EL INTERIOR, SENTENCIA T614, T-614, T 614, PTACCA, PLANES TERRITORIALES EN ADAPTACIÓN AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLANES TERRITORIALES EN ADAPTACION AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLAGISIDAS, PESTISIDAS, RESIDUOS, AGUAS RESIDUALES, CEMENTERIOS, ENTORNOS SALUDABLES, DECRETO 1085 DE 2021, EISA, ESTRATEGIA INTEGRADORA DE SALUD AMBIENTAL, MERCURIO, METALES, T-622 DE 2016, T 622, IPIAC, '},
-
-  nutricion:       { nombre: 'Nutrición, Alimentación y Soberanía', color: '#d97706', emoji: '🍎',
-    palabras: 'ALIMENTACION ESCOLAR, ALIMENTACIÓN ESCOLAR, DESNUTRICION, DESNUTRICIÓN, LACTANCIA, SOBERANIA ALIMENTARIA, SOBERANÍA ALIMENTARIA' },
-
-  promocion:       { nombre: 'Promoción de la Salud',               color: '#0891b2', emoji: '💙',
-    palabras: 'SUBDIRECCIÓN DE PROMOCIÓN DE LA SALUD, SUBDIRECCION DE PROMOCION DE LA SALUD, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD' },
-};
+const CD3_SUBDIRECCIONES = CONFIG_DEPENDENCIAS;
 
 let CD3_PALABRAS_PRIORIZACION = 'HONORABLE SENADOR, HONORABLE SENADORA, HONORABLE REPRESENTANTE, SENADOR DE LA REPUBLICA, SENADOR DE LA REPÚBLICA, SENADORA DE LA REPUBLICA, SENADORA DE LA REPÚBLICA, SENADO DE LA REPUBLICA, SENADO DE LA REPÚBLICA, SENADO, SENADOR, SENADORA, CONGRESISTA, REPRESENTANTE A LA CAMARA, REPRESENTANTE A LA CÁMARA, CAMARA DE REPRESENTANTES, CÁMARA DE REPRESENTANTES, PROPOSICION, PROPOSICIÓN, DEBATE DE CONTROL POLITICO, DEBATE DE CONTROL POLÍTICO, CITACION, CITACIÓN, CONGRESO DE LA REPUBLICA, CONGRESO DE LA REPÚBLICA, CONCEJO MUNICIPAL, CONCEJO DISTRITAL, CONCEJAL, CONCEJALA, ASAMBLEA DEPARTAMENTAL, DIPUTADO, DIPUTADA, CONTRALORIA, CONTRALORÍA, CONTRALORIA GENERAL, CONTRALORÍA GENERAL, CONTRALOR, CONTRALORA, PROCURADURIA, PROCURADURÍA, PROCURADURIA GENERAL, PROCURADURÍA GENERAL, PROCURADOR, PROCURADORA, DEFENSORIA DEL PUEBLO, DEFENSORÍA DEL PUEBLO, DEFENSOR DEL PUEBLO, DEFENSORA DEL PUEBLO, PERSONERIA, PERSONERÍA, PERSONERO, PERSONERA, VEEDURIA, VEEDURÍA, VEEDOR, VEEDORA';
 
@@ -746,6 +950,7 @@ function cd3RenderizarResultados() {
         <button data-idx="${i}" class="cd3-btn-preview" title="Previsualizar PDF" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">👁</button>
         <button data-idx="${i}" class="cd3-btn-adjuntos" title="Descargar Adjuntos" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📎</button>
         <button data-idx="${i}" class="cd3-btn-reasignar" title="Reasignar" style="padding:3px 5px; background:#111827; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;" ${!d.manual ? 'disabled' : ''}>🚀</button>
+        <button data-idx="${i}" class="cd3-btn-cerrar" title="Cerrar por comentario (comunicación informativa)" style="padding:3px 5px; background:#0d9488; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">🗂️</button>
         <span style="margin-left:2px;" title="${d.mensajeEstado || ''}">${iconoEstado}</span>
       </td>
     </tr>`;
@@ -762,7 +967,7 @@ function cd3RenderizarResultados() {
 
   cont.querySelectorAll('.cd3-select-sub').forEach(sel => {
     const idx = Number(sel.dataset.idx);
-    sel.value = CD3_DOCUMENTOS[idx].prediccion || '';
+    sel.value = CD3_DOCUMENTOS[idx].manual || '';
     sel.onchange = () => { CD3_DOCUMENTOS[idx].manual = sel.value || null; cd3RenderizarResultados(); };
   });
 
@@ -786,23 +991,40 @@ function cd3RenderizarResultados() {
       const doc = CD3_DOCUMENTOS[idx];
       if (!doc.manual) return;
       const sub = CD2_SUBDIRECCIONES[doc.manual];
-      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA SOLICITUD QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
-      const jefe = await cd2ObtenerJefe(sub.idOficina).catch(() => null);
+      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+      const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad).catch(() => null);
       const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
       if (!confirm(`¿Reasignar el IDC ${doc.idc} a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}`)) return;
       doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
       try {
         const r = await cd2ReasignarDocumento(String(doc.idc), doc.manual, comentario);
-        const ok = r.resultado && r.resultado.RESPUESTA !== false;
-        if (ok && r.validacion && r.validacion.RESPUESTA === false) {
-          doc.estadoEnvio = 'advertencia';
-          doc.mensajeEstado = r.validacion.MENSAJE || 'La validación del funcionario falló; verifica manualmente en ControlDoc.';
+        if (r.movioBandeja) {
+          doc.estadoEnvio = 'ok';
+          doc.mensajeEstado = '';
         } else {
-          doc.estadoEnvio = ok ? 'ok' : 'error';
-          doc.mensajeEstado = ok ? '' : (r.resultado?.MENSAJE || '');
+          doc.estadoEnvio = 'error';
+          doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó. ' + (r.validacion?.MENSAJE || '');
         }
-        console.log(ok ? '✅' : '⚠️', doc.idc, '→', r.subdireccion, r.resultado, 'validación:', r.validacion);
+        console.log(r.movioBandeja ? '✅' : '❌', doc.idc, '→', r.subdireccion, r.resultado, 'validación:', r.validacion);
         if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
+      } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; console.log('❌', doc.idc, e.message); }
+      cd3RenderizarResultados();
+    };
+  });
+
+  cont.querySelectorAll('.cd3-btn-cerrar').forEach(btn => {
+    btn.onclick = async () => {
+      const idx = Number(btn.dataset.idx);
+      const doc = CD3_DOCUMENTOS[idx];
+      const comentario = document.querySelector('#PCD_ComentarioCierre')?.value.trim() || CD2_COMENTARIO_CIERRE_DEFAULT;
+      if (!confirm(`¿Cerrar el IDC ${doc.idc} por comentario (comunicación informativa)?\n\nComentario: "${comentario}"`)) return;
+      doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
+      try {
+        const r = await cd2CerrarPorComentario(String(doc.idc), comentario);
+        doc.estadoEnvio = r.movioBandeja ? 'ok' : 'error';
+        doc.mensajeEstado = r.movioBandeja ? '' : 'El documento sigue en tu bandeja: el cierre no se completó.';
+        console.log(r.movioBandeja ? '✅' : '❌', doc.idc, 'cierre por comentario:', r.resultado);
+        if (r.movioBandeja) cd3ProgramarLimpieza(doc);
       } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; console.log('❌', doc.idc, e.message); }
       cd3RenderizarResultados();
     };
@@ -828,7 +1050,7 @@ async function cd3ReasignarTodosLosClasificados() {
 
   if (!confirm(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\n¿Confirmas?`)) return;
 
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'Se remite para trámite pertinente';
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
   const estado = document.querySelector('#PCD_EstadoReasignacionMasiva');
 
   const textoOriginal = btn.textContent;
@@ -837,30 +1059,35 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.style.cursor = 'not-allowed';
   btn.textContent = '⏳ Reasignando...';
 
-  let hechos = 0, advertencias = 0;
+  // Lista plana de tareas (doc + dependencia), para correrlas con un límite
+  // de concurrencia en vez de una por una en secuencia.
+  const tareas = [];
   for (const [clave, docs] of Object.entries(grupos)) {
-    for (const doc of docs) {
-      doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
-      try {
-        const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
-        const ok = r.resultado && r.resultado.RESPUESTA !== false;
-        if (ok && r.validacion && r.validacion.RESPUESTA === false) {
-          doc.estadoEnvio = 'advertencia';
-          doc.mensajeEstado = r.validacion.MENSAJE || 'La validación del funcionario falló; verifica manualmente en ControlDoc.';
-          advertencias++;
-        } else {
-          doc.estadoEnvio = ok ? 'ok' : 'error';
-        }
-        if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
-      } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
-      hechos++;
-      if (estado) estado.textContent = `⏳ Procesando ${hechos}/${pendientes.length}...`;
-      cd3RenderizarResultados();
-      await new Promise(res => setTimeout(res, 1200));
-    }
+    for (const doc of docs) tareas.push({ doc, clave });
   }
+
+  let advertencias = 0;
+
+  await ejecutarConPool(tareas, CONCURRENCIA_MAXIMA, async ({ doc, clave }) => {
+    doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
+    try {
+      const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
+      if (r.movioBandeja) {
+        doc.estadoEnvio = 'ok';
+      } else {
+        doc.estadoEnvio = 'error';
+        doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
+        advertencias++;
+      }
+      if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
+    } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
+    cd3RenderizarResultados();
+  }, (completados, total) => {
+    if (estado) estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  });
+
   const exitosos = pendientes.filter(d => d.estadoEnvio === 'ok').length;
-  const advertenciaTexto = advertencias ? ` — ⚠️ ${advertencias} con advertencia de validación (revisa manualmente)` : '';
+  const advertenciaTexto = advertencias ? ` — ⚠️ ${advertencias} no se movieron realmente de la bandeja (revisa manualmente)` : '';
   if (estado) estado.textContent = `🏁 Completado: ${exitosos} exitosos, ${pendientes.length - exitosos} fallidos (dentro del filtro)${advertenciaTexto}.`;
 
   btn.disabled = false;
@@ -869,28 +1096,36 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.textContent = textoOriginal;
 }
 
-async function cd3ReasignarLoteManual(claveSubdireccion, btnRef) {
-  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
+// ── Reasignación manual: pegar IDCs sueltos + marcar 1 o varias dependencias ──
+async function cd3ReasignarManualMultiple() {
   const idsRaw = document.querySelector('#PCD_ManualIds').value.trim();
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'Se remite para trámite pertinente';
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
   const estado = document.querySelector('#PCD_EstadoManual');
+  const btn = document.querySelector('#PCD_ReasignarManual');
+
   if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado en el cuadro de arriba.');
   const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-  const jefe = await cd2ObtenerJefe(sub.idOficina).catch(() => null);
-  const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}\n\nDocumentos: ${lista.join(', ')}`)) return;
 
-  const textoOriginal = btnRef.textContent;
-  estado.textContent = `⏳ Procesando ${lista.length} documento(s)...`;
-  btnRef.disabled = true;
-  btnRef.style.opacity = '0.6';
-  btnRef.style.cursor = 'not-allowed';
+  const clavesSeleccionadas = Array.from(document.querySelectorAll('.cd3-check-manual:checked')).map(chk => chk.value);
+  if (!clavesSeleccionadas.length) return alert('Marca al menos una dependencia destino.');
 
-  const resultados = await cd2ReasignarLote(lista, claveSubdireccion, comentario);
+  const nombresDestinos = clavesSeleccionadas.map(c => CD2_SUBDIRECCIONES[c].nombre).join(' + ');
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nDocumentos: ${lista.join(', ')}`)) return;
 
-  btnRef.disabled = false;
-  btnRef.style.opacity = '1';
-  btnRef.style.cursor = 'pointer';
+  const textoOriginal = btn.textContent;
+  estado.textContent = `⏳ Procesando 0/${lista.length}...`;
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.style.cursor = 'not-allowed';
+
+  const resultados = await cd2ReasignarLoteMultiple(lista, clavesSeleccionadas, comentario, (completados, total) => {
+    estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  });
+
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+  btn.textContent = textoOriginal;
   estado.textContent = `✅ ${resultados.exitosos.length} exitosos, ❌ ${resultados.fallidos.length} fallidos. Revisa la consola para detalle.`;
 }
 
@@ -916,10 +1151,11 @@ function cd3CrearPanel() {
     </div>
   `).join('');
 
-  const botonesManuales = Object.entries(CD2_SUBDIRECCIONES).map(([clave, sub]) => `
-    <button class="cd3-btn-manual-sub" data-clave="${clave}" style="display:block; width:100%; text-align:left; padding:8px 10px; margin-bottom:6px; background:${sub.color}; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">
+  const checkboxesManuales = Object.entries(CD2_SUBDIRECCIONES).map(([clave, sub]) => `
+    <label style="display:flex; align-items:center; gap:8px; padding:7px 10px; margin-bottom:5px; background:${sub.color}22; border-left:4px solid ${sub.color}; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">
+      <input type="checkbox" class="cd3-check-manual" value="${clave}" style="flex-shrink:0;">
       ${sub.emoji} ${sub.nombre}
-    </button>
+    </label>
   `).join('');
 
   cont.innerHTML = `
@@ -957,7 +1193,10 @@ function cd3CrearPanel() {
         </div>
         <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
-          <input id="PCD_ComentarioReasignacion" type="text" value="Se remite para trámite pertinente" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+          <input id="PCD_ComentarioReasignacion" type="text" value="${CD2_COMENTARIO_REASIGNACION_DEFAULT}" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+
+          <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
+          <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
 
           <label style="color:#6b7280; font-size:11px;">Filtrar tabla</label>
           <select id="PCD_FiltroTabla" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
@@ -983,7 +1222,13 @@ function cd3CrearPanel() {
         <div id="PCD_CuerpoSec4" style="display:none; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">IDCs o Radicados (uno por línea, o separados por coma)</label>
           <textarea id="PCD_ManualIds" rows="4" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
-          ${botonesManuales}
+
+          <label style="color:#6b7280; font-size:11px;">Dependencia(s) destino — marca una o varias</label>
+          <div style="margin:4px 0 10px;">
+            ${checkboxesManuales}
+          </div>
+
+          <button id="PCD_ReasignarManual" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a las dependencias marcadas</button>
           <div id="PCD_EstadoManual" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
         </div>
       </div>
@@ -1026,12 +1271,7 @@ function cd3CrearPanel() {
     else alert('Palabras clave guardadas. Abre "Cargar y Clasificar" para ver el resultado.');
   };
 
-  cont.querySelectorAll('.cd3-btn-manual-sub').forEach(btn => {
-    btn.addEventListener('mousedown', (e) => e.stopPropagation());
-    btn.onmouseenter = () => btn.style.opacity = '0.85';
-    btn.onmouseleave = () => btn.style.opacity = '1';
-    btn.onclick = () => cd3ReasignarLoteManual(btn.dataset.clave, btn);
-  });
+  document.querySelector('#PCD_ReasignarManual').onclick = cd3ReasignarManualMultiple;
 }
 
 function cd3HabilitarArrastre(contenedor, agarre) {
