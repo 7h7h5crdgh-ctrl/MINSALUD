@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-// ═══ SCRIPT 1 DE 2: PANEL DE SEGUIMIENTO DE DOCUMENTOS ═══
+// ═══ SCRIPT 1: PANEL DE SEGUIMIENTO DE DOCUMENTOS ═══
 // ════════════════════════════════════════════════════════════════
 
 const CD_CONFIG = {
@@ -120,8 +120,26 @@ function cdEstadoGlobal(pasoReciente, strEstadoDocumento) {
   return { texto: estadoFlujo, color: '#92400e', fondo: '#fef3c7' };
 }
 
+function cdSanitizarBase64(str) {
+  if (typeof str !== 'string') return '';
+  let limpio = str.trim();
+  if (limpio.startsWith('"') && limpio.endsWith('"')) limpio = limpio.slice(1, -1);
+  limpio = limpio.replace(/[\r\n\s]/g, '');
+  limpio = limpio.replace(/\\r/g, '').replace(/\\n/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+
+  const idxComa = limpio.lastIndexOf(',');
+  if (idxComa !== -1 && idxComa > limpio.length - 10) {
+    const sufijo = limpio.slice(idxComa + 1);
+    if (/^[a-zA-Z0-9]{1,6}$/.test(sufijo)) {
+      limpio = limpio.slice(0, idxComa);
+    }
+  }
+  return limpio;
+}
+
 function cdBase64APdfBlob(base64) {
-  const binario = atob(base64);
+  const limpio = cdSanitizarBase64(base64);
+  const binario = atob(limpio);
   const bytes = new Uint8Array(binario.length);
   for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
   return new Blob([bytes], { type: 'application/pdf' });
@@ -129,16 +147,51 @@ function cdBase64APdfBlob(base64) {
 
 async function cdObtenerPdfBlobUrl(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlImagenB64, { IDDOCUMENTO: idDocumento });
-  const texto = await resp.text();
-  const coincidencia = texto.match(/[A-Za-z0-9+/=]{200,}/);
-  const base64 = coincidencia ? coincidencia[0] : null;
-  if (!base64 || !base64.startsWith('JVBERi0')) return null;
-  return URL.createObjectURL(cdBase64APdfBlob(base64));
+  const textoCrudo = await resp.text();
+
+  let data = null;
+  try { data = JSON.parse(textoCrudo); } catch (e) { /* no era JSON válido */ }
+
+  let candidato = null;
+  let urlDirecta = null;
+
+  if (data && typeof data === 'object' && data.VALORESPUESTA) {
+    const valor = data.VALORESPUESTA;
+    if (typeof valor === 'string' && valor.startsWith('http')) {
+      urlDirecta = valor;
+    } else {
+      candidato = String(valor);
+    }
+  } else if (typeof data === 'string') {
+    candidato = data;
+  } else if (data === null) {
+    candidato = textoCrudo;
+  }
+
+  if (urlDirecta) {
+    const pdfResp = await fetch(urlDirecta, { credentials: 'same-origin' });
+    if (!pdfResp.ok) { console.warn('[CD] Fallo al descargar desde URL, status:', pdfResp.status); return null; }
+    return URL.createObjectURL(await pdfResp.blob());
+  }
+
+  if (candidato) {
+    const limpio = cdSanitizarBase64(candidato);
+    console.log('[CD] Candidato base64 — inicio:', limpio.slice(0, 40), '| fin:', limpio.slice(-40), '| longitud:', limpio.length);
+    try {
+      return URL.createObjectURL(cdBase64APdfBlob(limpio));
+    } catch (e) {
+      console.warn('[CD] Error al decodificar base64:', e.message, '— primeros 300 caracteres de la respuesta cruda:', textoCrudo.slice(0, 300));
+      return null;
+    }
+  }
+
+  console.warn('[CD] No se reconoció ningún formato válido. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
+  return null;
 }
 
 async function cdPrevisualizarPdf(idDocumento) {
   const url = await cdObtenerPdfBlobUrl(idDocumento);
-  if (!url) return alert('No se encontró un PDF válido para este documento.');
+  if (!url) return alert('No se encontró un PDF válido para este documento. Revisa la consola (F12) para más detalle.');
   window.open(url, '_blank');
 }
 
@@ -154,14 +207,35 @@ async function cdDescargarPdf(idDocumento) {
 async function cdDescargarAdjuntos(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlGuardarZip, { IDDOCUMENTO: idDocumento, DILIGENCIADOS: 'NO' });
   const data = await resp.json();
-  if (data && data.RESPUESTA === true && data.VALORESPUESTA) {
+  console.log('[CD] Respuesta GuardarAdjuntosZIP:', data);
+
+  if (!data || data.RESPUESTA !== true || !data.VALORESPUESTA) {
+    alert(data?.MENSAJE || 'Este documento no tiene adjuntos disponibles.');
+    return false;
+  }
+
+  const valor = data.VALORESPUESTA;
+  const nombreArchivo = data.OBJETOS || `AdjuntosDoc_${idDocumento}.zip`;
+
+  if (typeof valor === 'string' && valor.startsWith('http')) {
+    const fileResp = await fetch(valor, { credentials: 'same-origin' });
+    if (!fileResp.ok) {
+      console.warn('[CD] Fallo al descargar ZIP, status:', fileResp.status);
+      alert('No se pudo descargar el ZIP. Revisa la consola (F12).');
+      return false;
+    }
+    const url = URL.createObjectURL(await fileResp.blob());
     const a = document.createElement('a');
-    a.href = data.VALORESPUESTA; a.download = data.OBJETOS || `AdjuntosDoc_${idDocumento}.zip`;
+    a.href = url; a.download = nombreArchivo;
     document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
     return true;
   }
-  alert(data?.MENSAJE || 'Este documento no tiene adjuntos disponibles.');
-  return false;
+
+  const a = document.createElement('a');
+  a.href = valor; a.download = nombreArchivo;
+  document.body.appendChild(a); a.click(); a.remove();
+  return true;
 }
 
 function cdCrearPanel() {
@@ -342,16 +416,15 @@ async function cdMostrarAsociados(idDocumento) {
   document.querySelector('#PSD_CerrarAsociados').onclick = () => modal.remove();
 }
 
-cdCrearPanel();
-
 // ════════════════════════════════════════════════════════════════
-// ═══ MOTOR DE REASIGNACIÓN (sin UI propia — usado solo por el Clasificador) ═══
+// ═══ SCRIPT 2: MOTOR DE REASIGNACIÓN (con validación diagnóstica) ═══
 // ════════════════════════════════════════════════════════════════
 
 const CD2_CONFIG = {
-  urlBandeja:     'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/DOCUMENTOSGESTIONObtenerbyESTADOFLUJOeIDUSUARIOASIGNO',
+  urlBandeja:      'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/DOCUMENTOSGESTIONObtenerbyESTADOFLUJOeIDUSUARIOASIGNO',
   urlFuncionarios: 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios',
-  urlTramitar:    'https://controldoc.minsalud.gov.co/Controldoc//Gestion/TRAMITARENUNSOLOMETODO',
+  urlTramitar:     'https://controldoc.minsalud.gov.co/Controldoc//Gestion/TRAMITARENUNSOLOMETODO',
+  urlValidar:      'https://controldoc.minsalud.gov.co/Controldoc//Gestion/VALIDARUSUARIOSESTADOSI',
 };
 
 const CD2_SUBDIRECCIONES = {
@@ -413,6 +486,15 @@ async function cd2ObtenerJefe(idOficina) {
   return data[0];
 }
 
+async function cd2ValidarFuncionario(funcionario) {
+  try {
+    const data = await cd2Post(CD2_CONFIG.urlValidar, { LSTIDFUNCIONARIOS: JSON.stringify([funcionario]) });
+    return data;
+  } catch (e) {
+    return { RESPUESTA: null, MENSAJE: 'No se pudo validar: ' + e.message };
+  }
+}
+
 async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
   const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
   if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
@@ -437,6 +519,9 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
 
   const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
 
+  const validacion = await cd2ValidarFuncionario(funcionario);
+  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
+
   const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: [funcionario] } });
   params.append('ESTADOFLUJO', 'TRANSITO');
   params.append('IDDOCUMENTOGESTION', registro.IDDOCUMENTOGESTION);
@@ -448,7 +533,8 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     body: params.toString(),
   });
   const data = await resp.json();
-  return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data };
+  console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO para IDC ${idDocumento}:`, data);
+  return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion };
 }
 
 async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario) {
@@ -467,12 +553,7 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// ═══ SCRIPT 2 DE 2: CLASIFICADOR DE DOCUMENTOS POR COMPETENCIA ═══
-// - Predicción por PALABRA COMPLETA con umbral por longitud
-// - Gana la PRIMERA coincidencia en el texto
-// - Filtro "🏛️ Solo Priorizaciones y Control Político" (independiente)
-// - Reasignación manual embebida (única UI de reasignación)
-// - Indicador de carga con botón deshabilitado al clasificar
+// ═══ SCRIPT 3: CLASIFICADOR DE DOCUMENTOS POR COMPETENCIA ═══
 // ════════════════════════════════════════════════════════════════
 
 const CD3_CONFIG = { urlBandeja: 'https://controldoc.minsalud.gov.co/ControlDoc/Documentos/DOCUMENTOSGESTIONObtenerbyESTADOFLUJOeIDUSUARIOASIGNO' };
@@ -561,7 +642,6 @@ async function cd3EjecutarClasificacion() {
   const btn = document.querySelector('#PCD_Clasificar');
   const estado = document.querySelector('#PCD_Estado');
 
-  // Indicador de carga: deshabilita el botón y cambia su texto mientras dura la consulta
   const textoOriginal = btn.textContent;
   btn.disabled = true;
   btn.style.opacity = '0.6';
@@ -588,7 +668,7 @@ async function cd3EjecutarClasificacion() {
   } else {
     CD3_DOCUMENTOS = pendientes.map(doc => {
       const { prediccion, esPriorizacion } = cd3ClasificarDocumento(doc);
-      return { idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)', prediccion, esPriorizacion, manual: prediccion, estadoEnvio: null };
+      return { idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)', prediccion, esPriorizacion, manual: prediccion, estadoEnvio: null, mensajeEstado: '' };
     });
     estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s).`;
     cd3RenderizarResultados();
@@ -598,6 +678,16 @@ async function cd3EjecutarClasificacion() {
   btn.style.opacity = '1';
   btn.style.cursor = 'pointer';
   btn.textContent = textoOriginal;
+}
+
+function cd3ProgramarLimpieza(doc) {
+  setTimeout(() => {
+    const idx = CD3_DOCUMENTOS.indexOf(doc);
+    if (idx !== -1 && doc.estadoEnvio === 'ok') {
+      CD3_DOCUMENTOS.splice(idx, 1);
+      cd3RenderizarResultados();
+    }
+  }, 5000);
 }
 
 function cd3RenderizarResultados() {
@@ -626,7 +716,10 @@ function cd3RenderizarResultados() {
 
   const filas = documentosFiltrados.map((d) => {
     const i = CD3_DOCUMENTOS.indexOf(d);
-    const iconoEstado = d.estadoEnvio === 'ok' ? '✅' : d.estadoEnvio === 'error' ? '❌' : d.estadoEnvio === 'enviando' ? '⏳' : '';
+    const iconoEstado = d.estadoEnvio === 'ok' ? '✅'
+      : d.estadoEnvio === 'error' ? '❌'
+      : d.estadoEnvio === 'advertencia' ? '⚠️'
+      : d.estadoEnvio === 'enviando' ? '⏳' : '';
     return `
     <tr style="border-bottom:1px solid #e5e7eb;">
       <td style="padding:5px; font-weight:bold;">${d.idc}</td>
@@ -641,7 +734,7 @@ function cd3RenderizarResultados() {
         <button data-idx="${i}" class="cd3-btn-preview" title="Previsualizar PDF" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">👁</button>
         <button data-idx="${i}" class="cd3-btn-adjuntos" title="Descargar Adjuntos" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📎</button>
         <button data-idx="${i}" class="cd3-btn-reasignar" title="Reasignar" style="padding:3px 5px; background:#111827; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;" ${!d.manual ? 'disabled' : ''}>🚀</button>
-        <span style="margin-left:2px;">${iconoEstado}</span>
+        <span style="margin-left:2px;" title="${d.mensajeEstado || ''}">${iconoEstado}</span>
       </td>
     </tr>`;
   }).join('');
@@ -664,16 +757,14 @@ function cd3RenderizarResultados() {
   cont.querySelectorAll('.cd3-btn-preview').forEach(btn => {
     btn.onclick = () => {
       const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
-      if (typeof cdPrevisualizarPdf === 'function') cdPrevisualizarPdf(doc.idc);
-      else alert('Falta cargar el Panel de Seguimiento de Documentos (Script 1).');
+      cdPrevisualizarPdf(doc.idc);
     };
   });
 
   cont.querySelectorAll('.cd3-btn-adjuntos').forEach(btn => {
     btn.onclick = () => {
       const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
-      if (typeof cdDescargarAdjuntos === 'function') cdDescargarAdjuntos(doc.idc);
-      else alert('Falta cargar el Panel de Seguimiento de Documentos (Script 1).');
+      cdDescargarAdjuntos(doc.idc);
     };
   });
 
@@ -691,9 +782,16 @@ function cd3RenderizarResultados() {
       try {
         const r = await cd2ReasignarDocumento(String(doc.idc), doc.manual, comentario);
         const ok = r.resultado && r.resultado.RESPUESTA !== false;
-        doc.estadoEnvio = ok ? 'ok' : 'error';
-        console.log(ok ? '✅' : '⚠️', doc.idc, '→', r.subdireccion, r.resultado);
-      } catch (e) { doc.estadoEnvio = 'error'; console.log('❌', doc.idc, e.message); }
+        if (ok && r.validacion && r.validacion.RESPUESTA === false) {
+          doc.estadoEnvio = 'advertencia';
+          doc.mensajeEstado = r.validacion.MENSAJE || 'La validación del funcionario falló; verifica manualmente en ControlDoc.';
+        } else {
+          doc.estadoEnvio = ok ? 'ok' : 'error';
+          doc.mensajeEstado = ok ? '' : (r.resultado?.MENSAJE || '');
+        }
+        console.log(ok ? '✅' : '⚠️', doc.idc, '→', r.subdireccion, r.resultado, 'validación:', r.validacion);
+        if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
+      } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; console.log('❌', doc.idc, e.message); }
       cd3RenderizarResultados();
     };
   });
@@ -727,15 +825,22 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.style.cursor = 'not-allowed';
   btn.textContent = '⏳ Reasignando...';
 
-  let hechos = 0;
+  let hechos = 0, advertencias = 0;
   for (const [clave, docs] of Object.entries(grupos)) {
     for (const doc of docs) {
       doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
       try {
         const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
         const ok = r.resultado && r.resultado.RESPUESTA !== false;
-        doc.estadoEnvio = ok ? 'ok' : 'error';
-      } catch (e) { doc.estadoEnvio = 'error'; }
+        if (ok && r.validacion && r.validacion.RESPUESTA === false) {
+          doc.estadoEnvio = 'advertencia';
+          doc.mensajeEstado = r.validacion.MENSAJE || 'La validación del funcionario falló; verifica manualmente en ControlDoc.';
+          advertencias++;
+        } else {
+          doc.estadoEnvio = ok ? 'ok' : 'error';
+        }
+        if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
+      } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
       hechos++;
       if (estado) estado.textContent = `⏳ Procesando ${hechos}/${pendientes.length}...`;
       cd3RenderizarResultados();
@@ -743,7 +848,8 @@ async function cd3ReasignarTodosLosClasificados() {
     }
   }
   const exitosos = pendientes.filter(d => d.estadoEnvio === 'ok').length;
-  if (estado) estado.textContent = `🏁 Completado: ${exitosos} exitosos, ${pendientes.length - exitosos} fallidos (dentro del filtro).`;
+  const advertenciaTexto = advertencias ? ` — ⚠️ ${advertencias} con advertencia de validación (revisa manualmente)` : '';
+  if (estado) estado.textContent = `🏁 Completado: ${exitosos} exitosos, ${pendientes.length - exitosos} fallidos (dentro del filtro)${advertenciaTexto}.`;
 
   btn.disabled = false;
   btn.style.opacity = '1';
@@ -928,4 +1034,8 @@ function cd3HabilitarArrastre(contenedor, agarre) {
   document.addEventListener('mouseup', () => { arrastrando = false; });
 }
 
+// ════════════════════════════════════════════════════════════════
+// ═══ INICIALIZACIÓN ═══
+// ════════════════════════════════════════════════════════════════
+cdCrearPanel();
 cd3CrearPanel();
