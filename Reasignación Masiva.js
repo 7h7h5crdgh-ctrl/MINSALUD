@@ -43,74 +43,31 @@ const CONFIG_DEPENDENCIAS = {
   },
   promocion: {
     nombre: 'Promoción de la Salud', idOficina: 130, color: '#0891b2', emoji: '💙',
-    palabras: 'VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
+    palabras: 'EUTANASIA, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
   },
+
+  // ─── Nueva dependencia, agregada tal como pediste ───
+  // idOficina e idUnidad quedan en null porque aún no los tenemos: con el
+  // panel cargado, corre en la consola  cdBuscarOficinaPorNombre('SALUD MENTAL')
+  // y reemplaza ambos por los valores IDOFICINAPRODUCTORA e
+  // IDUNIDADADMINISTRATIVA que te devuelva.
   saludMental: {
     nombre: 'Salud Mental y Convivencia', idOficina: 132, idUnidad: 2, color: '#9333ea', emoji: '🧠',
     palabras: 'SALUD MENTAL, CONVIVENCIA, CONVIVENCIA SOCIAL, PREVENCION DEL SUICIDIO, PREVENCIÓN DEL SUICIDIO, CONSUMO DE SUSTANCIAS PSICOACTIVAS, SUSTANCIAS PSICOACTIVAS, SALUD MENTAL Y CONVIVENCIA',
   },
+  
   equiposbasicos: {
     nombre: 'Subdireccion de Fortalecimiento del Acceso a la Salud y Equipos Basicos', idOficina: 141, idUnidad: 2, color: '#93c5fd', emoji: '🚑',
     palabras: 'EQUIPOS BÁSICOS, EQUIPOS BASICOS, EBS',
   },
+
   ciudadanias: {
     nombre: 'Direccion de Ciudadanias, Equidad y Salud', idOficina: 133, idUnidad: 2, color: '#facc15', emoji: '👥',
     palabras: 'ALERTA ROSA, LEY 2326 DE 2023',
   },
+  
 };
-// --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLENAR LA NUEVA ENTRADA DE LA SUBDIRECCIÓN/DIRECCIÓN]
-
-// Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
-// masivos ("Reasignar clasificados" y "Reasignación Manual"). 3 es un punto
-// de partida seguro: sube el número solo si ya probaste con
-// probarConcurrenciaSegura() (ver más abajo) que el servidor lo tolera bien.
-const CONCURRENCIA_MAXIMA = 3;
-
-// Corre `tareaFn` sobre cada elemento de `items`, con como máximo `limite`
-// tareas en vuelo al mismo tiempo (en vez de esperar a que cada una termine
-// antes de lanzar la siguiente). `onProgreso(completados, total)` se llama
-// cada vez que una tarea termina, para poder actualizar la UI en vivo.
-async function ejecutarConPool(items, limite, tareaFn, onProgreso) {
-  let indice = 0;
-  let completados = 0;
-  const total = items.length;
-
-  async function trabajador() {
-    while (indice < total) {
-      const miIndice = indice++;
-      const item = items[miIndice];
-      try {
-        await tareaFn(item);
-      } finally {
-        completados++;
-        if (onProgreso) onProgreso(completados, total);
-      }
-    }
-  }
-
-  const trabajadores = Array.from({ length: Math.min(limite, total) }, () => trabajador());
-  await Promise.all(trabajadores);
-}
-
-// Prueba de carga NO destructiva: dispara varias llamadas de solo lectura
-// (buscar jefe de una oficina) en paralelo y mide cuántas tolera el servidor
-// sin fallar y qué tan rápido responde, sin mover ni un solo documento.
-// Úsalo así en la consola: probarConcurrenciaSegura()
-async function probarConcurrenciaSegura(nivelesAProbar = [1, 3, 5, 8, 12]) {
-  const url = 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios?IDUNIDADADMINISTRATIVA=2&IDOFICINAPRODUCTORA=41&IDCARGO=2&NOMBRES=&APELLIDOS=&ListFuncSel=[]&ListFuncCop=[]&IDGRUPOTRABAJO=0&PROCESOSENA=&PROCEDENCIA=&BUSCARINACTIVO=NO&API=';
-  for (const n of nivelesAProbar) {
-    const inicio = performance.now();
-    const resultados = await Promise.allSettled(
-      Array.from({ length: n }, () => fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }))
-    );
-    const ms = Math.round(performance.now() - inicio);
-    const exitosos = resultados.filter(r => r.status === 'fulfilled' && r.value.ok).length;
-    const fallidos = n - exitosos;
-    console.log(`[Prueba] Concurrencia ${n}: ${exitosos} ok / ${fallidos} fallidos — ${ms}ms total (${Math.round(ms / n)}ms promedio)`);
-    await new Promise(r => setTimeout(r, 2000));
-  }
-}
-
+// --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLEGAR LA NUEVA TABLA DE CONTENIDO DE LA SUBDIRECCIÓN/DIRECCIÓN]
 // ════════════════════════════════════════════════════════════════
 // ═══ SCRIPT 1: PANEL DE SEGUIMIENTO DE DOCUMENTOS ═══
 // ════════════════════════════════════════════════════════════════
@@ -254,6 +211,7 @@ function cdSanitizarBase64(str) {
   limpio = limpio.replace(/[\r\n\s]/g, '');
   limpio = limpio.replace(/\\r/g, '').replace(/\\n/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
 
+  // Quita un sufijo de extensión pegado al final con coma, ej: "...==,pdf" o "...==,docx"
   const idxComa = limpio.lastIndexOf(',');
   if (idxComa !== -1 && idxComa > limpio.length - 10) {
     const sufijo = limpio.slice(idxComa + 1);
@@ -544,7 +502,7 @@ async function cdMostrarAsociados(idDocumento) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// ═══ SCRIPT 2: MOTOR DE REASIGNACIÓN (uno o varios destinos, verificación real por bandeja) ═══
+// ═══ SCRIPT 2: MOTOR DE REASIGNACIÓN (verificación real por bandeja) ═══
 // ════════════════════════════════════════════════════════════════
 
 const CD2_CONFIG = {
@@ -557,7 +515,6 @@ const CD2_CONFIG = {
 
 const CD2_IDACCION_GESTION_EXITOSA = 4;
 const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
-const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
 
 const CD2_SUBDIRECCIONES = CONFIG_DEPENDENCIAS;
 const CD2_IDUNIDAD = 2;
@@ -623,13 +580,18 @@ async function cd2ValidarFuncionario(funcionario) {
   }
 }
 
-// Construye el DOCUMENTOGESTION base a partir del registro en bandeja
-// (info del lado del remitente/documento, compartida sin importar el
-// destino o destinos a los que se vaya a tramitar).
-function cd2ConstruirDocumentoGestion(registro, comentario) {
+async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
+  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
+  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
+  if (sub.idOficina == null) {
+    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
+  }
+  const registro = await cd2BuscarEnBandeja(idDocumento);
+  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
   const ahoraISO = new Date().toISOString();
   const fechaVieja = 'Sun Dec 17 1995 00:00:00 GMT-0500 (hora estándar de Colombia)';
-  return {
+
+  const documentoGestion = {
     IDDOCUMENTO: registro.IDDOCUMENTO, FECHAASIGNO: ahoraISO,
     IDUNIDADADMINISTRATIVA: registro.IDUNIDADADMINISTRATIVA, IDOFICINAPRODUCTORA: registro.IDOFICINAPRODUCTORA,
     IDACCION: 3, IDINSTRUCCION: 0, DIAS: 0, COMENTARIO: comentario, HORAS: 0,
@@ -642,11 +604,13 @@ function cd2ConstruirDocumentoGestion(registro, comentario) {
     BPMDECISIONES: '', IDBMPPROCESOITEM_DEVOLVER: 0,
     IDTIPOLOGIADOCUMENTAL_TRDC: registro.IDTIPOLOGIADOCUMENTAL_TRDC, RADICADO: registro.RADICADO,
   };
-}
 
-async function cd2EnviarTramite(registro, listaFuncionarios, comentario) {
-  const documentoGestion = cd2ConstruirDocumentoGestion(registro, comentario);
-  const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: listaFuncionarios } });
+  const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
+
+  const validacion = await cd2ValidarFuncionario(funcionario);
+  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
+
+  const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: [funcionario] } });
   params.append('ESTADOFLUJO', 'TRANSITO');
   params.append('IDDOCUMENTOGESTION', registro.IDDOCUMENTOGESTION);
   params.append('COMENTARIO', comentario);
@@ -656,25 +620,7 @@ async function cd2EnviarTramite(registro, listaFuncionarios, comentario) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
     body: params.toString(),
   });
-  return resp.json();
-}
-
-// Reasigna un IDC a UNA sola dependencia (usado por el botón 🚀 de cada fila
-// y por "Reasignar clasificados").
-async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
-  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
-  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
-  if (sub.idOficina == null) {
-    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
-  }
-  const registro = await cd2BuscarEnBandeja(idDocumento);
-  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
-  const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
-
-  const validacion = await cd2ValidarFuncionario(funcionario);
-  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
-
-  const data = await cd2EnviarTramite(registro, [funcionario], comentario);
+  const data = await resp.json();
   console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO para IDC ${idDocumento}:`, data);
 
   // Verificación real de éxito: si el documento ya no aparece en tu bandeja
@@ -691,63 +637,16 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
   return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
 }
 
-// Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
-// (el mismo mecanismo que usa "Buscador de Usuarios" en la interfaz cuando
-// seleccionas varios destinatarios y le das "Agregar Todos").
-async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, comentario) {
-  const subs = clavesSubdirecciones.map(clave => {
-    const sub = CD2_SUBDIRECCIONES[clave];
-    if (!sub) throw new Error('Subdirección no reconocida: ' + clave);
-    if (sub.idOficina == null) {
-      throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS.`);
-    }
-    return sub;
-  });
-
-  const registro = await cd2BuscarEnBandeja(idDocumento);
-
-  const destinos = [];
-  for (const sub of subs) {
-    const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
-    destinos.push({ sub, jefe });
-  }
-
-  const listaFuncionarios = destinos.map(({ jefe }) => ({ ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true }));
-
-  const validaciones = [];
-  for (const funcionario of listaFuncionarios) {
-    const v = await cd2ValidarFuncionario(funcionario);
-    validaciones.push({ nombre: funcionario.NOMBRESAPELLIDOS, validacion: v });
-    console.log(`[CD2] Validación funcionario (${funcionario.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, v);
-  }
-
-  const data = await cd2EnviarTramite(registro, listaFuncionarios, comentario);
-  console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO (multi-destino) para IDC ${idDocumento}:`, data);
-
-  let movioBandeja = false;
-  try {
-    await cd2BuscarEnBandeja(idDocumento);
-  } catch (e) {
-    movioBandeja = true;
-  }
-
-  return {
-    idDocumento,
-    destinos: destinos.map(({ sub, jefe }) => ({ nombre: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
-    resultado: data, validaciones, movioBandeja,
-  };
-}
-
-async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentario, onProgreso) {
+async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario) {
   const resultados = { exitosos: [], fallidos: [] };
-  await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
-    const id = idRaw.trim();
+  for (const id of listaIds) {
     try {
-      const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
-      console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + '), r.resultado);
+      const r = await cd2ReasignarDocumento(id.trim(), claveSubdireccion, comentario);
+      console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado, 'validación:', r.validacion);
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
-  }, onProgreso);
+    await new Promise(res => setTimeout(res, 1200));
+  }
   console.log(`\n🏁 Lote completo. ✅ ${resultados.exitosos.length} — ❌ ${resultados.fallidos.length}`);
   return resultados;
 }
@@ -773,6 +672,7 @@ async function cd2CerrarPorComentario(idDocumento, comentario) {
   const data = await resp.json();
   console.log(`[CD2] Respuesta cierre por comentario para IDC ${idDocumento}:`, data);
 
+  // Misma verificación real: si ya no está en la bandeja, sí se cerró.
   let movioBandeja = false;
   try {
     await cd2BuscarEnBandeja(idDocumento);
@@ -991,7 +891,7 @@ function cd3RenderizarResultados() {
       const doc = CD3_DOCUMENTOS[idx];
       if (!doc.manual) return;
       const sub = CD2_SUBDIRECCIONES[doc.manual];
-      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
       const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad).catch(() => null);
       const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
       if (!confirm(`¿Reasignar el IDC ${doc.idc} a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}`)) return;
@@ -1050,7 +950,7 @@ async function cd3ReasignarTodosLosClasificados() {
 
   if (!confirm(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\n¿Confirmas?`)) return;
 
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
   const estado = document.querySelector('#PCD_EstadoReasignacionMasiva');
 
   const textoOriginal = btn.textContent;
@@ -1059,33 +959,27 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.style.cursor = 'not-allowed';
   btn.textContent = '⏳ Reasignando...';
 
-  // Lista plana de tareas (doc + dependencia), para correrlas con un límite
-  // de concurrencia en vez de una por una en secuencia.
-  const tareas = [];
+  let hechos = 0, advertencias = 0;
   for (const [clave, docs] of Object.entries(grupos)) {
-    for (const doc of docs) tareas.push({ doc, clave });
+    for (const doc of docs) {
+      doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
+      try {
+        const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
+        if (r.movioBandeja) {
+          doc.estadoEnvio = 'ok';
+        } else {
+          doc.estadoEnvio = 'error';
+          doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
+          advertencias++;
+        }
+        if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
+      } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
+      hechos++;
+      if (estado) estado.textContent = `⏳ Procesando ${hechos}/${pendientes.length}...`;
+      cd3RenderizarResultados();
+      await new Promise(res => setTimeout(res, 1200));
+    }
   }
-
-  let advertencias = 0;
-
-  await ejecutarConPool(tareas, CONCURRENCIA_MAXIMA, async ({ doc, clave }) => {
-    doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
-    try {
-      const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
-      if (r.movioBandeja) {
-        doc.estadoEnvio = 'ok';
-      } else {
-        doc.estadoEnvio = 'error';
-        doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
-        advertencias++;
-      }
-      if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
-    } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
-    cd3RenderizarResultados();
-  }, (completados, total) => {
-    if (estado) estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
-  });
-
   const exitosos = pendientes.filter(d => d.estadoEnvio === 'ok').length;
   const advertenciaTexto = advertencias ? ` — ⚠️ ${advertencias} no se movieron realmente de la bandeja (revisa manualmente)` : '';
   if (estado) estado.textContent = `🏁 Completado: ${exitosos} exitosos, ${pendientes.length - exitosos} fallidos (dentro del filtro)${advertenciaTexto}.`;
@@ -1096,36 +990,28 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.textContent = textoOriginal;
 }
 
-// ── Reasignación manual: pegar IDCs sueltos + marcar 1 o varias dependencias ──
-async function cd3ReasignarManualMultiple() {
+async function cd3ReasignarLoteManual(claveSubdireccion, btnRef) {
+  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
   const idsRaw = document.querySelector('#PCD_ManualIds').value.trim();
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
   const estado = document.querySelector('#PCD_EstadoManual');
-  const btn = document.querySelector('#PCD_ReasignarManual');
-
   if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado en el cuadro de arriba.');
   const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad).catch(() => null);
+  const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}\n\nDocumentos: ${lista.join(', ')}`)) return;
 
-  const clavesSeleccionadas = Array.from(document.querySelectorAll('.cd3-check-manual:checked')).map(chk => chk.value);
-  if (!clavesSeleccionadas.length) return alert('Marca al menos una dependencia destino.');
+  const textoOriginal = btnRef.textContent;
+  estado.textContent = `⏳ Procesando ${lista.length} documento(s)...`;
+  btnRef.disabled = true;
+  btnRef.style.opacity = '0.6';
+  btnRef.style.cursor = 'not-allowed';
 
-  const nombresDestinos = clavesSeleccionadas.map(c => CD2_SUBDIRECCIONES[c].nombre).join(' + ');
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nDocumentos: ${lista.join(', ')}`)) return;
+  const resultados = await cd2ReasignarLote(lista, claveSubdireccion, comentario);
 
-  const textoOriginal = btn.textContent;
-  estado.textContent = `⏳ Procesando 0/${lista.length}...`;
-  btn.disabled = true;
-  btn.style.opacity = '0.6';
-  btn.style.cursor = 'not-allowed';
-
-  const resultados = await cd2ReasignarLoteMultiple(lista, clavesSeleccionadas, comentario, (completados, total) => {
-    estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
-  });
-
-  btn.disabled = false;
-  btn.style.opacity = '1';
-  btn.style.cursor = 'pointer';
-  btn.textContent = textoOriginal;
+  btnRef.disabled = false;
+  btnRef.style.opacity = '1';
+  btnRef.style.cursor = 'pointer';
   estado.textContent = `✅ ${resultados.exitosos.length} exitosos, ❌ ${resultados.fallidos.length} fallidos. Revisa la consola para detalle.`;
 }
 
@@ -1151,11 +1037,10 @@ function cd3CrearPanel() {
     </div>
   `).join('');
 
-  const checkboxesManuales = Object.entries(CD2_SUBDIRECCIONES).map(([clave, sub]) => `
-    <label style="display:flex; align-items:center; gap:8px; padding:7px 10px; margin-bottom:5px; background:${sub.color}22; border-left:4px solid ${sub.color}; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">
-      <input type="checkbox" class="cd3-check-manual" value="${clave}" style="flex-shrink:0;">
+  const botonesManuales = Object.entries(CD2_SUBDIRECCIONES).map(([clave, sub]) => `
+    <button class="cd3-btn-manual-sub" data-clave="${clave}" style="display:block; width:100%; text-align:left; padding:8px 10px; margin-bottom:6px; background:${sub.color}; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">
       ${sub.emoji} ${sub.nombre}
-    </label>
+    </button>
   `).join('');
 
   cont.innerHTML = `
@@ -1193,7 +1078,7 @@ function cd3CrearPanel() {
         </div>
         <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
-          <input id="PCD_ComentarioReasignacion" type="text" value="${CD2_COMENTARIO_REASIGNACION_DEFAULT}" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+          <input id="PCD_ComentarioReasignacion" type="text" value="SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
 
           <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
           <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
@@ -1222,13 +1107,7 @@ function cd3CrearPanel() {
         <div id="PCD_CuerpoSec4" style="display:none; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">IDCs o Radicados (uno por línea, o separados por coma)</label>
           <textarea id="PCD_ManualIds" rows="4" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
-
-          <label style="color:#6b7280; font-size:11px;">Dependencia(s) destino — marca una o varias</label>
-          <div style="margin:4px 0 10px;">
-            ${checkboxesManuales}
-          </div>
-
-          <button id="PCD_ReasignarManual" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a las dependencias marcadas</button>
+          ${botonesManuales}
           <div id="PCD_EstadoManual" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
         </div>
       </div>
@@ -1271,7 +1150,12 @@ function cd3CrearPanel() {
     else alert('Palabras clave guardadas. Abre "Cargar y Clasificar" para ver el resultado.');
   };
 
-  document.querySelector('#PCD_ReasignarManual').onclick = cd3ReasignarManualMultiple;
+  cont.querySelectorAll('.cd3-btn-manual-sub').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.onmouseenter = () => btn.style.opacity = '0.85';
+    btn.onmouseleave = () => btn.style.opacity = '1';
+    btn.onclick = () => cd3ReasignarLoteManual(btn.dataset.clave, btn);
+  });
 }
 
 function cd3HabilitarArrastre(contenedor, agarre) {
