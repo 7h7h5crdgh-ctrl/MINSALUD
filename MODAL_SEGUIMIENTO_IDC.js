@@ -174,8 +174,27 @@ function cdEstadoGlobal(pasoReciente, strEstadoDocumento) {
 }
 
 // ---------- 6. Previsualización / descarga de PDF ----------
+function cdSanitizarBase64(str) {
+  if (typeof str !== 'string') return '';
+  let limpio = str.trim();
+  if (limpio.startsWith('"') && limpio.endsWith('"')) limpio = limpio.slice(1, -1);
+  limpio = limpio.replace(/[\r\n\s]/g, '');
+  limpio = limpio.replace(/\\r/g, '').replace(/\\n/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+
+  // Quita un sufijo de extensión pegado al final con coma, ej: "...==,pdf" o "...==,docx"
+  const idxComa = limpio.lastIndexOf(',');
+  if (idxComa !== -1 && idxComa > limpio.length - 10) {
+    const sufijo = limpio.slice(idxComa + 1);
+    if (/^[a-zA-Z0-9]{1,6}$/.test(sufijo)) {
+      limpio = limpio.slice(0, idxComa);
+    }
+  }
+  return limpio;
+}
+
 function cdBase64APdfBlob(base64) {
-  const binario = atob(base64);
+  const limpio = cdSanitizarBase64(base64);
+  const binario = atob(limpio);
   const bytes = new Uint8Array(binario.length);
   for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
   return new Blob([bytes], { type: 'application/pdf' });
@@ -183,11 +202,46 @@ function cdBase64APdfBlob(base64) {
 
 async function cdObtenerPdfBlobUrl(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlImagenB64, { IDDOCUMENTO: idDocumento });
-  const texto = await resp.text();
-  const coincidencia = texto.match(/[A-Za-z0-9+/=]{200,}/);
-  const base64 = coincidencia ? coincidencia[0] : null;
-  if (!base64 || !base64.startsWith('JVBERi0')) return null;
-  return URL.createObjectURL(cdBase64APdfBlob(base64));
+  const textoCrudo = await resp.text();
+
+  let data = null;
+  try { data = JSON.parse(textoCrudo); } catch (e) { /* no era JSON válido */ }
+
+  let candidato = null;
+  let urlDirecta = null;
+
+  if (data && typeof data === 'object' && data.VALORESPUESTA) {
+    const valor = data.VALORESPUESTA;
+    if (typeof valor === 'string' && valor.startsWith('http')) {
+      urlDirecta = valor;
+    } else {
+      candidato = String(valor);
+    }
+  } else if (typeof data === 'string') {
+    candidato = data;
+  } else if (data === null) {
+    candidato = textoCrudo;
+  }
+
+  if (urlDirecta) {
+    const pdfResp = await fetch(urlDirecta, { credentials: 'same-origin' });
+    if (!pdfResp.ok) { console.warn('[CD] Fallo al descargar desde URL, status:', pdfResp.status); return null; }
+    return URL.createObjectURL(await pdfResp.blob());
+  }
+
+  if (candidato) {
+    const limpio = cdSanitizarBase64(candidato);
+    console.log('[CD] Candidato base64 — inicio:', limpio.slice(0, 40), '| fin:', limpio.slice(-40), '| longitud:', limpio.length);
+    try {
+      return URL.createObjectURL(cdBase64APdfBlob(limpio));
+    } catch (e) {
+      console.warn('[CD] Error al decodificar base64:', e.message, '— primeros 300 caracteres de la respuesta cruda:', textoCrudo.slice(0, 300));
+      return null;
+    }
+  }
+
+  console.warn('[CD] No se reconoció ningún formato válido. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
+  return null;
 }
 
 async function cdPrevisualizarPdf(idDocumento) {
