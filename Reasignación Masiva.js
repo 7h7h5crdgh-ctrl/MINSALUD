@@ -120,73 +120,84 @@ function cdEstadoGlobal(pasoReciente, strEstadoDocumento) {
   return { texto: estadoFlujo, color: '#92400e', fondo: '#fef3c7' };
 }
 
-function cdSanitizarBase64(str) {
-  if (typeof str !== 'string') return '';
-  let limpio = str.trim();
-  if (limpio.startsWith('"') && limpio.endsWith('"')) limpio = limpio.slice(1, -1);
-  limpio = limpio.replace(/[\r\n\s]/g, '');
-  limpio = limpio.replace(/\\r/g, '').replace(/\\n/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-
-  const idxComa = limpio.lastIndexOf(',');
-  if (idxComa !== -1 && idxComa > limpio.length - 10) {
-    const sufijo = limpio.slice(idxComa + 1);
-    if (/^[a-zA-Z0-9]{1,6}$/.test(sufijo)) {
-      limpio = limpio.slice(0, idxComa);
-    }
-  }
-  return limpio;
-}
-
 function cdBase64APdfBlob(base64) {
-  const limpio = cdSanitizarBase64(base64);
-  const binario = atob(limpio);
+  const binario = atob(base64);
   const bytes = new Uint8Array(binario.length);
   for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
+// ---- CORREGIDA: maneja JSON con URL directa, JSON con base64, o texto plano con base64 ----
+
 async function cdObtenerPdfBlobUrl(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlImagenB64, { IDDOCUMENTO: idDocumento });
   const textoCrudo = await resp.text();
 
+  // Caso 1: la respuesta es JSON con VALORESPUESTA (objeto)
   let data = null;
   try { data = JSON.parse(textoCrudo); } catch (e) { /* no era JSON válido */ }
 
-  let candidato = null;
-  let urlDirecta = null;
-
   if (data && typeof data === 'object' && data.VALORESPUESTA) {
+    console.log('[CD] Respuesta IMAGENB64byIDDOCUMENTO (JSON objeto):', data);
     const valor = data.VALORESPUESTA;
     if (typeof valor === 'string' && valor.startsWith('http')) {
-      urlDirecta = valor;
-    } else {
-      candidato = String(valor);
+      const pdfResp = await fetch(valor, { credentials: 'same-origin' });
+      if (!pdfResp.ok) { console.warn('[CD] Fallo al descargar desde URL, status:', pdfResp.status); return null; }
+      return URL.createObjectURL(await pdfResp.blob());
     }
-  } else if (typeof data === 'string') {
-    candidato = data;
-  } else if (data === null) {
-    candidato = textoCrudo;
+    const valorLimpio = String(valor).trim();
+    if (valorLimpio.startsWith('JVBERi0')) {
+      return URL.createObjectURL(cdBase64APdfBlob(valorLimpio));
+    }
+    console.warn('[CD] VALORESPUESTA no es URL ni parece base64 de PDF:', valorLimpio.slice(0, 100));
+    return null;
   }
 
-  if (urlDirecta) {
-    const pdfResp = await fetch(urlDirecta, { credentials: 'same-origin' });
-    if (!pdfResp.ok) { console.warn('[CD] Fallo al descargar desde URL, status:', pdfResp.status); return null; }
-    return URL.createObjectURL(await pdfResp.blob());
-  }
-
-  if (candidato) {
-    const limpio = cdSanitizarBase64(candidato);
-    console.log('[CD] Candidato base64 — inicio:', limpio.slice(0, 40), '| fin:', limpio.slice(-40), '| longitud:', limpio.length);
-    try {
+  // Caso 2: JSON.parse devolvió directamente un string (base64 entre comillas)
+  if (typeof data === 'string') {
+    const limpio = data.trim();
+    if (limpio.startsWith('JVBERi0')) {
       return URL.createObjectURL(cdBase64APdfBlob(limpio));
-    } catch (e) {
-      console.warn('[CD] Error al decodificar base64:', e.message, '— primeros 300 caracteres de la respuesta cruda:', textoCrudo.slice(0, 300));
-      return null;
     }
   }
 
-  console.warn('[CD] No se reconoció ningún formato válido. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
+  // Caso 3: texto plano, sin envoltorio JSON — comprobar directamente sin regex
+  // (evita el RangeError: nunca "buscamos" dentro de la cadena completa, solo
+  // comparamos el inicio, que es una operación O(1) sin backtracking)
+  const textoLimpio = textoCrudo.trim().replace(/^"|"$/g, '');
+  if (textoLimpio.startsWith('JVBERi0')) {
+    return URL.createObjectURL(cdBase64APdfBlob(textoLimpio));
+  }
+
+  console.warn('[CD] No se reconoció JSON ni base64 de PDF en la respuesta. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
   return null;
+}
+  // Caso 2: JSON.parse devolvió directamente un string (base64 entre comillas)
+  if (typeof data === 'string') {
+    const limpio = data.trim();
+    if (limpio.startsWith('JVBERi0')) {
+      return URL.createObjectURL(cdBase64APdfBlob(limpio));
+    }
+  }
+
+  // Caso 3: texto plano, sin envoltorio JSON — comprobar directamente sin regex
+  // (evita el RangeError: nunca "buscamos" dentro de la cadena completa, solo
+  // comparamos el inicio, que es una operación O(1) sin backtracking)
+  const textoLimpio = textoCrudo.trim().replace(/^"|"$/g, '');
+  if (textoLimpio.startsWith('JVBERi0')) {
+    return URL.createObjectURL(cdBase64APdfBlob(textoLimpio));
+  }
+
+  console.warn('[CD] No se reconoció JSON ni base64 de PDF en la respuesta. Primeros 300 caracteres:', textoCrudo.slice(0, 300));
+  return null;
+}
+  const coincidencia = textoCrudo.match(/[A-Za-z0-9+/=]{200,}/);
+  const base64 = coincidencia ? coincidencia[0] : null;
+  if (!base64 || !base64.startsWith('JVBERi0')) {
+    console.warn('[CD] No se reconoció JSON ni base64 en la respuesta:', textoCrudo.slice(0, 300));
+    return null;
+  }
+  return URL.createObjectURL(cdBase64APdfBlob(base64));
 }
 
 async function cdPrevisualizarPdf(idDocumento) {
@@ -204,6 +215,7 @@ async function cdDescargarPdf(idDocumento) {
   URL.revokeObjectURL(url);
 }
 
+// ---- CORREGIDA: maneja URL directa además del comportamiento original ----
 async function cdDescargarAdjuntos(idDocumento) {
   const resp = await cdFetchPost(CD_CONFIG.urlGuardarZip, { IDDOCUMENTO: idDocumento, DILIGENCIADOS: 'NO' });
   const data = await resp.json();
@@ -572,7 +584,7 @@ const CD3_SUBDIRECCIONES = {
     palabras: 'ALIMENTACION ESCOLAR, ALIMENTACIÓN ESCOLAR, DESNUTRICION, DESNUTRICIÓN, LACTANCIA, SOBERANIA ALIMENTARIA, SOBERANÍA ALIMENTARIA' },
 
   promocion:       { nombre: 'Promoción de la Salud',               color: '#0891b2', emoji: '💙',
-    palabras: 'VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD' },
+    palabras: 'SUBDIRECCIÓN DE PROMOCIÓN DE LA SALUD, SUBDIRECCION DE PROMOCION DE LA SALUD, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD' },
 };
 
 let CD3_PALABRAS_PRIORIZACION = 'HONORABLE SENADOR, HONORABLE SENADORA, HONORABLE REPRESENTANTE, SENADOR DE LA REPUBLICA, SENADOR DE LA REPÚBLICA, SENADORA DE LA REPUBLICA, SENADORA DE LA REPÚBLICA, SENADO DE LA REPUBLICA, SENADO DE LA REPÚBLICA, SENADO, SENADOR, SENADORA, CONGRESISTA, REPRESENTANTE A LA CAMARA, REPRESENTANTE A LA CÁMARA, CAMARA DE REPRESENTANTES, CÁMARA DE REPRESENTANTES, PROPOSICION, PROPOSICIÓN, DEBATE DE CONTROL POLITICO, DEBATE DE CONTROL POLÍTICO, CITACION, CITACIÓN, CONGRESO DE LA REPUBLICA, CONGRESO DE LA REPÚBLICA, CONCEJO MUNICIPAL, CONCEJO DISTRITAL, CONCEJAL, CONCEJALA, ASAMBLEA DEPARTAMENTAL, DIPUTADO, DIPUTADA, CONTRALORIA, CONTRALORÍA, CONTRALORIA GENERAL, CONTRALORÍA GENERAL, CONTRALOR, CONTRALORA, PROCURADURIA, PROCURADURÍA, PROCURADURIA GENERAL, PROCURADURÍA GENERAL, PROCURADOR, PROCURADORA, DEFENSORIA DEL PUEBLO, DEFENSORÍA DEL PUEBLO, DEFENSOR DEL PUEBLO, DEFENSORA DEL PUEBLO, PERSONERIA, PERSONERÍA, PERSONERO, PERSONERA, VEEDURIA, VEEDURÍA, VEEDOR, VEEDORA';
@@ -774,7 +786,7 @@ function cd3RenderizarResultados() {
       const doc = CD3_DOCUMENTOS[idx];
       if (!doc.manual) return;
       const sub = CD2_SUBDIRECCIONES[doc.manual];
-      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'Se remite para trámite pertinente';
+      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA SOLICITUD QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
       const jefe = await cd2ObtenerJefe(sub.idOficina).catch(() => null);
       const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
       if (!confirm(`¿Reasignar el IDC ${doc.idc} a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}`)) return;
