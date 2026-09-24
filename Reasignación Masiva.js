@@ -566,6 +566,7 @@ const CD2_CONFIG = {
 
 const CD2_IDACCION_GESTION_EXITOSA = 4;
 const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
+const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
 
 const CD2_SUBDIRECCIONES = CONFIG_DEPENDENCIAS;
 const CD2_IDUNIDAD = 2;
@@ -631,18 +632,13 @@ async function cd2ValidarFuncionario(funcionario) {
   }
 }
 
-async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
-  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
-  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
-  if (sub.idOficina == null) {
-    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
-  }
-  const registro = await cd2BuscarEnBandeja(idDocumento);
-  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
+// Construye el DOCUMENTOGESTION base a partir del registro en bandeja
+// (info del lado del remitente/documento, compartida sin importar el
+// destino o destinos a los que se vaya a tramitar).
+function cd2ConstruirDocumentoGestion(registro, comentario) {
   const ahoraISO = new Date().toISOString();
   const fechaVieja = 'Sun Dec 17 1995 00:00:00 GMT-0500 (hora estándar de Colombia)';
-
-  const documentoGestion = {
+  return {
     IDDOCUMENTO: registro.IDDOCUMENTO, FECHAASIGNO: ahoraISO,
     IDUNIDADADMINISTRATIVA: registro.IDUNIDADADMINISTRATIVA, IDOFICINAPRODUCTORA: registro.IDOFICINAPRODUCTORA,
     IDACCION: 3, IDINSTRUCCION: 0, DIAS: 0, COMENTARIO: comentario, HORAS: 0,
@@ -655,13 +651,11 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     BPMDECISIONES: '', IDBMPPROCESOITEM_DEVOLVER: 0,
     IDTIPOLOGIADOCUMENTAL_TRDC: registro.IDTIPOLOGIADOCUMENTAL_TRDC, RADICADO: registro.RADICADO,
   };
+}
 
-  const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
-
-  const validacion = await cd2ValidarFuncionario(funcionario);
-  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
-
-  const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: [funcionario] } });
+async function cd2EnviarTramite(registro, listaFuncionarios, comentario) {
+  const documentoGestion = cd2ConstruirDocumentoGestion(registro, comentario);
+  const params = cd2Serializar({ tramite: { DOCUMENTOREQUISITOS: [0], DOCUMENTOGESTION: documentoGestion, lstFUNCIONARIOS: listaFuncionarios } });
   params.append('ESTADOFLUJO', 'TRANSITO');
   params.append('IDDOCUMENTOGESTION', registro.IDDOCUMENTOGESTION);
   params.append('COMENTARIO', comentario);
@@ -671,7 +665,25 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
     body: params.toString(),
   });
-  const data = await resp.json();
+  return resp.json();
+}
+
+// Reasigna un IDC a UNA sola dependencia (usado por el botón 🚀 de cada fila
+// y por "Reasignar clasificados").
+async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
+  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
+  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
+  if (sub.idOficina == null) {
+    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
+  }
+  const registro = await cd2BuscarEnBandeja(idDocumento);
+  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
+  const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
+
+  const validacion = await cd2ValidarFuncionario(funcionario);
+  console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
+
+  const data = await cd2EnviarTramite(registro, [funcionario], comentario);
   console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO para IDC ${idDocumento}:`, data);
 
   // Verificación real de éxito: si el documento ya no aparece en tu bandeja
@@ -688,6 +700,53 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
   return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
 }
 
+// Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
+// (el mismo mecanismo que usa "Buscador de Usuarios" en la interfaz cuando
+// seleccionas varios destinatarios y le das "Agregar Todos").
+async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, comentario) {
+  const subs = clavesSubdirecciones.map(clave => {
+    const sub = CD2_SUBDIRECCIONES[clave];
+    if (!sub) throw new Error('Subdirección no reconocida: ' + clave);
+    if (sub.idOficina == null) {
+      throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS.`);
+    }
+    return sub;
+  });
+
+  const registro = await cd2BuscarEnBandeja(idDocumento);
+
+  const destinos = [];
+  for (const sub of subs) {
+    const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
+    destinos.push({ sub, jefe });
+  }
+
+  const listaFuncionarios = destinos.map(({ jefe }) => ({ ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true }));
+
+  const validaciones = [];
+  for (const funcionario of listaFuncionarios) {
+    const v = await cd2ValidarFuncionario(funcionario);
+    validaciones.push({ nombre: funcionario.NOMBRESAPELLIDOS, validacion: v });
+    console.log(`[CD2] Validación funcionario (${funcionario.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, v);
+  }
+
+  const data = await cd2EnviarTramite(registro, listaFuncionarios, comentario);
+  console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO (multi-destino) para IDC ${idDocumento}:`, data);
+
+  let movioBandeja = false;
+  try {
+    await cd2BuscarEnBandeja(idDocumento);
+  } catch (e) {
+    movioBandeja = true;
+  }
+
+  return {
+    idDocumento,
+    destinos: destinos.map(({ sub, jefe }) => ({ nombre: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
+    resultado: data, validaciones, movioBandeja,
+  };
+}
+
 async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgreso) {
   const resultados = { exitosos: [], fallidos: [] };
   await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
@@ -695,6 +754,20 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgr
     try {
       const r = await cd2ReasignarDocumento(id, claveSubdireccion, comentario);
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado, 'validación:', r.validacion);
+      if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
+    } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
+  }, onProgreso);
+  console.log(`\n🏁 Lote completo. ✅ ${resultados.exitosos.length} — ❌ ${resultados.fallidos.length}`);
+  return resultados;
+}
+
+async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentario, onProgreso) {
+  const resultados = { exitosos: [], fallidos: [] };
+  await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
+    const id = idRaw.trim();
+    try {
+      const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
+      console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + '), r.resultado);
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -942,7 +1015,7 @@ function cd3RenderizarResultados() {
       const doc = CD3_DOCUMENTOS[idx];
       if (!doc.manual) return;
       const sub = CD2_SUBDIRECCIONES[doc.manual];
-      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
+      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
       const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad).catch(() => null);
       const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
       if (!confirm(`¿Reasignar el IDC ${doc.idc} a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}`)) return;
@@ -1001,7 +1074,7 @@ async function cd3ReasignarTodosLosClasificados() {
 
   if (!confirm(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\n¿Confirmas?`)) return;
 
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
   const estado = document.querySelector('#PCD_EstadoReasignacionMasiva');
 
   const textoOriginal = btn.textContent;
@@ -1047,30 +1120,36 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.textContent = textoOriginal;
 }
 
-async function cd3ReasignarLoteManual(claveSubdireccion, btnRef) {
-  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
+// ── Reasignación manual: pegar IDCs sueltos + marcar 1 o varias dependencias ──
+async function cd3ReasignarManualMultiple() {
   const idsRaw = document.querySelector('#PCD_ManualIds').value.trim();
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
   const estado = document.querySelector('#PCD_EstadoManual');
+  const btn = document.querySelector('#PCD_ReasignarManual');
+
   if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado en el cuadro de arriba.');
   const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad).catch(() => null);
-  const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}\n\nDocumentos: ${lista.join(', ')}`)) return;
 
-  const textoOriginal = btnRef.textContent;
+  const clavesSeleccionadas = Array.from(document.querySelectorAll('.cd3-check-manual:checked')).map(chk => chk.value);
+  if (!clavesSeleccionadas.length) return alert('Marca al menos una dependencia destino.');
+
+  const nombresDestinos = clavesSeleccionadas.map(c => CD2_SUBDIRECCIONES[c].nombre).join(' + ');
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nDocumentos: ${lista.join(', ')}`)) return;
+
+  const textoOriginal = btn.textContent;
   estado.textContent = `⏳ Procesando 0/${lista.length}... (${CONCURRENCIA_MAXIMA} a la vez)`;
-  btnRef.disabled = true;
-  btnRef.style.opacity = '0.6';
-  btnRef.style.cursor = 'not-allowed';
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.style.cursor = 'not-allowed';
 
-  const resultados = await cd2ReasignarLote(lista, claveSubdireccion, comentario, (completados, total) => {
+  const resultados = await cd2ReasignarLoteMultiple(lista, clavesSeleccionadas, comentario, (completados, total) => {
     estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
   });
 
-  btnRef.disabled = false;
-  btnRef.style.opacity = '1';
-  btnRef.style.cursor = 'pointer';
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+  btn.textContent = textoOriginal;
   estado.textContent = `✅ ${resultados.exitosos.length} exitosos, ❌ ${resultados.fallidos.length} fallidos. Revisa la consola para detalle.`;
 }
 
@@ -1096,10 +1175,11 @@ function cd3CrearPanel() {
     </div>
   `).join('');
 
-  const botonesManuales = Object.entries(CD2_SUBDIRECCIONES).map(([clave, sub]) => `
-    <button class="cd3-btn-manual-sub" data-clave="${clave}" style="display:block; width:100%; text-align:left; padding:8px 10px; margin-bottom:6px; background:${sub.color}; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">
+  const checkboxesManuales = Object.entries(CD2_SUBDIRECCIONES).map(([clave, sub]) => `
+    <label style="display:flex; align-items:center; gap:8px; padding:7px 10px; margin-bottom:5px; background:${sub.color}22; border-left:4px solid ${sub.color}; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">
+      <input type="checkbox" class="cd3-check-manual" value="${clave}" style="flex-shrink:0;">
       ${sub.emoji} ${sub.nombre}
-    </button>
+    </label>
   `).join('');
 
   cont.innerHTML = `
@@ -1137,7 +1217,7 @@ function cd3CrearPanel() {
         </div>
         <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
-          <input id="PCD_ComentarioReasignacion" type="text" value="SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+          <input id="PCD_ComentarioReasignacion" type="text" value="${CD2_COMENTARIO_REASIGNACION_DEFAULT}" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
 
           <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
           <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
@@ -1166,7 +1246,13 @@ function cd3CrearPanel() {
         <div id="PCD_CuerpoSec4" style="display:none; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">IDCs o Radicados (uno por línea, o separados por coma)</label>
           <textarea id="PCD_ManualIds" rows="4" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
-          ${botonesManuales}
+
+          <label style="color:#6b7280; font-size:11px;">Dependencia(s) destino — marca una o varias</label>
+          <div style="margin:4px 0 10px;">
+            ${checkboxesManuales}
+          </div>
+
+          <button id="PCD_ReasignarManual" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a las dependencias marcadas</button>
           <div id="PCD_EstadoManual" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
         </div>
       </div>
@@ -1209,12 +1295,7 @@ function cd3CrearPanel() {
     else alert('Palabras clave guardadas. Abre "Cargar y Clasificar" para ver el resultado.');
   };
 
-  cont.querySelectorAll('.cd3-btn-manual-sub').forEach(btn => {
-    btn.addEventListener('mousedown', (e) => e.stopPropagation());
-    btn.onmouseenter = () => btn.style.opacity = '0.85';
-    btn.onmouseleave = () => btn.style.opacity = '1';
-    btn.onclick = () => cd3ReasignarLoteManual(btn.dataset.clave, btn);
-  });
+  document.querySelector('#PCD_ReasignarManual').onclick = cd3ReasignarManualMultiple;
 }
 
 function cd3HabilitarArrastre(contenedor, agarre) {
