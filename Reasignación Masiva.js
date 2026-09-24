@@ -43,7 +43,7 @@ const CONFIG_DEPENDENCIAS = {
   },
   promocion: {
     nombre: 'Promoción de la Salud', idOficina: 130, color: '#0891b2', emoji: '💙',
-    palabras: 'SISTEMA INTEGRADO DE INFORMACIÓN DE VIOLENCIAS DE GÉNERO, SISTEMA INTEGRADO DE INFORMACION DE VIOLENCIAS DE GENERO, MUERTE DIGNA, MORRIR CON DIGNIDAD, SUBDIRECCIÓN DE PROMOCIÓN DE LA SALUD, SUBDIRECCION DE PROMOCION DE LA SALUD, SUBDORECCIÓN DE PROMOCION DE LA SALUD, SUBDIRECCION DE PROMOCIÓN DE LA SALUD, EUTANASIA, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
+    palabras: 'MUERTE DIGNA, MORRIR CON DIGNIDAD, SUBDIRECCIÓN DE PROMOCIÓN DE LA SALUD, SUBDIRECCION DE PROMOCION DE LA SALUD, SUBDORECCIÓN DE PROMOCION DE LA SALUD, SUBDIRECCION DE PROMOCIÓN DE LA SALUD, EUTANASIA, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
   },
 
   // ─── Nueva dependencia, agregada tal como pediste ───
@@ -55,7 +55,7 @@ const CONFIG_DEPENDENCIAS = {
     nombre: 'Salud Mental y Convivencia', idOficina: 132, idUnidad: 2, color: '#9333ea', emoji: '🧠',
     palabras: 'SALUD MENTAL, CONVIVENCIA, CONVIVENCIA SOCIAL, PREVENCION DEL SUICIDIO, PREVENCIÓN DEL SUICIDIO, CONSUMO DE SUSTANCIAS PSICOACTIVAS, SUSTANCIAS PSICOACTIVAS, SALUD MENTAL Y CONVIVENCIA',
   },
-  
+
   equiposbasicos: {
     nombre: 'Subdireccion de Fortalecimiento del Acceso a la Salud y Equipos Basicos', idOficina: 141, idUnidad: 2, color: '#93c5fd', emoji: '🚑',
     palabras: 'EQUIPOS BÁSICOS, EQUIPOS BASICOS, EBS',
@@ -65,9 +65,60 @@ const CONFIG_DEPENDENCIAS = {
     nombre: 'Direccion de Ciudadanias, Equidad y Salud', idOficina: 133, idUnidad: 2, color: '#facc15', emoji: '👥',
     palabras: 'ALERTA ROSA, LEY 2326 DE 2023',
   },
-  
+
 };
-// --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLEGAR LA NUEVA TABLA DE CONTENIDO DE LA SUBDIRECCIÓN/DIRECCIÓN]
+// --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLENAR LA NUEVA ENTRADA DE LA SUBDIRECCIÓN/DIRECCIÓN]
+
+// Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
+// masivos ("Reasignar clasificados" y "Reasignación Manual"). Pediste 5 en
+// simultáneo: sube o baja este número aquí si más adelante quieres ajustarlo.
+const CONCURRENCIA_MAXIMA = 5;
+
+// Corre `tareaFn` sobre cada elemento de `items`, con como máximo `limite`
+// tareas en vuelo al mismo tiempo (en vez de esperar a que cada una termine
+// antes de lanzar la siguiente). `onProgreso(completados, total)` se llama
+// cada vez que una tarea termina, para poder actualizar la UI en vivo.
+async function ejecutarConPool(items, limite, tareaFn, onProgreso) {
+  let indice = 0;
+  let completados = 0;
+  const total = items.length;
+
+  async function trabajador() {
+    while (indice < total) {
+      const miIndice = indice++;
+      const item = items[miIndice];
+      try {
+        await tareaFn(item);
+      } finally {
+        completados++;
+        if (onProgreso) onProgreso(completados, total);
+      }
+    }
+  }
+
+  const trabajadores = Array.from({ length: Math.min(limite, total) }, () => trabajador());
+  await Promise.all(trabajadores);
+}
+
+// Prueba de carga NO destructiva: dispara varias llamadas de solo lectura
+// (buscar jefe de una oficina) en paralelo y mide cuántas tolera el servidor
+// sin fallar y qué tan rápido responde, sin mover ni un solo documento.
+// Úsalo así en la consola: probarConcurrenciaSegura()
+async function probarConcurrenciaSegura(nivelesAProbar = [1, 3, 5, 8, 12]) {
+  const url = 'https://controldoc.minsalud.gov.co/ControlDoc/Usuarios/FuncionariosObtenerByCriterios?IDUNIDADADMINISTRATIVA=2&IDOFICINAPRODUCTORA=41&IDCARGO=2&NOMBRES=&APELLIDOS=&ListFuncSel=[]&ListFuncCop=[]&IDGRUPOTRABAJO=0&PROCESOSENA=&PROCEDENCIA=&BUSCARINACTIVO=NO&API=';
+  for (const n of nivelesAProbar) {
+    const inicio = performance.now();
+    const resultados = await Promise.allSettled(
+      Array.from({ length: n }, () => fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }))
+    );
+    const ms = Math.round(performance.now() - inicio);
+    const exitosos = resultados.filter(r => r.status === 'fulfilled' && r.value.ok).length;
+    const fallidos = n - exitosos;
+    console.log(`[Prueba] Concurrencia ${n}: ${exitosos} ok / ${fallidos} fallidos — ${ms}ms total (${Math.round(ms / n)}ms promedio)`);
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
 // ════════════════════════════════════════════════════════════════
 // ═══ SCRIPT 1: PANEL DE SEGUIMIENTO DE DOCUMENTOS ═══
 // ════════════════════════════════════════════════════════════════
@@ -637,16 +688,16 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
   return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
 }
 
-async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario) {
+async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgreso) {
   const resultados = { exitosos: [], fallidos: [] };
-  for (const id of listaIds) {
+  await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
+    const id = idRaw.trim();
     try {
-      const r = await cd2ReasignarDocumento(id.trim(), claveSubdireccion, comentario);
+      const r = await cd2ReasignarDocumento(id, claveSubdireccion, comentario);
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado, 'validación:', r.validacion);
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
-    await new Promise(res => setTimeout(res, 1200));
-  }
+  }, onProgreso);
   console.log(`\n🏁 Lote completo. ✅ ${resultados.exitosos.length} — ❌ ${resultados.fallidos.length}`);
   return resultados;
 }
@@ -959,27 +1010,33 @@ async function cd3ReasignarTodosLosClasificados() {
   btn.style.cursor = 'not-allowed';
   btn.textContent = '⏳ Reasignando...';
 
-  let hechos = 0, advertencias = 0;
+  // Lista plana de tareas (doc + dependencia), para correrlas con un límite
+  // de concurrencia en vez de una por una en secuencia.
+  const tareas = [];
   for (const [clave, docs] of Object.entries(grupos)) {
-    for (const doc of docs) {
-      doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
-      try {
-        const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
-        if (r.movioBandeja) {
-          doc.estadoEnvio = 'ok';
-        } else {
-          doc.estadoEnvio = 'error';
-          doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
-          advertencias++;
-        }
-        if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
-      } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
-      hechos++;
-      if (estado) estado.textContent = `⏳ Procesando ${hechos}/${pendientes.length}...`;
-      cd3RenderizarResultados();
-      await new Promise(res => setTimeout(res, 1200));
-    }
+    for (const doc of docs) tareas.push({ doc, clave });
   }
+
+  let advertencias = 0;
+
+  await ejecutarConPool(tareas, CONCURRENCIA_MAXIMA, async ({ doc, clave }) => {
+    doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
+    try {
+      const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
+      if (r.movioBandeja) {
+        doc.estadoEnvio = 'ok';
+      } else {
+        doc.estadoEnvio = 'error';
+        doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
+        advertencias++;
+      }
+      if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
+    } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
+    cd3RenderizarResultados();
+  }, (completados, total) => {
+    if (estado) estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  });
+
   const exitosos = pendientes.filter(d => d.estadoEnvio === 'ok').length;
   const advertenciaTexto = advertencias ? ` — ⚠️ ${advertencias} no se movieron realmente de la bandeja (revisa manualmente)` : '';
   if (estado) estado.textContent = `🏁 Completado: ${exitosos} exitosos, ${pendientes.length - exitosos} fallidos (dentro del filtro)${advertenciaTexto}.`;
@@ -1002,12 +1059,14 @@ async function cd3ReasignarLoteManual(claveSubdireccion, btnRef) {
   if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}\n\nDocumentos: ${lista.join(', ')}`)) return;
 
   const textoOriginal = btnRef.textContent;
-  estado.textContent = `⏳ Procesando ${lista.length} documento(s)...`;
+  estado.textContent = `⏳ Procesando 0/${lista.length}... (${CONCURRENCIA_MAXIMA} a la vez)`;
   btnRef.disabled = true;
   btnRef.style.opacity = '0.6';
   btnRef.style.cursor = 'not-allowed';
 
-  const resultados = await cd2ReasignarLote(lista, claveSubdireccion, comentario);
+  const resultados = await cd2ReasignarLote(lista, claveSubdireccion, comentario, (completados, total) => {
+    estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  });
 
   btnRef.disabled = false;
   btnRef.style.opacity = '1';
