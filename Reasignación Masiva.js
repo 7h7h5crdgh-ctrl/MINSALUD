@@ -98,6 +98,7 @@ const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y C
 
 const CD3_COMENTARIOS_REASIGNACION = [
   { etiqueta: 'Estándar (Resolución 3687/2016)', texto: CD2_COMENTARIO_REASIGNACION_DEFAULT },
+  { etiqueta: 'Reasginación solicitud e insumos Control Polític', texto: 'SE ASIGNA LA PRESENTE COMUNICACIÓN POR SER DE COMPETENCIA DE ESTA DEPENDENCIA EN EL MARCO DE CONTROL POLÍTICO, POR LO CUAL SE SOLICITA GESTIONAR Y DAR RESPUESTA DENTRO DE LOS TÉRMINOS LEGALES ESTABLECIDOS.'},
   { etiqueta: 'Remisión para trámite y respuesta de fondo', texto: 'SE REMITE PARA TRÁMITE Y RESPUESTA DE FONDO POR COMPETENCIA, DENTRO DE LOS TÉRMINOS DE LEY.' },
   { etiqueta: 'Revisión conjunta con área técnica', texto: 'SE ASIGNA PARA REVISIÓN Y RESPUESTA CONJUNTA CON EL ÁREA TÉCNICA CORRESPONDIENTE.' },
   // ── Agrega aquí tus propios comentarios de reasignación ──
