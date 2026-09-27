@@ -585,16 +585,37 @@ async function cdDescargarAdjuntos(idDocumento) {
   return true;
 }
 
+// Escala manual de la interfaz (afecta texto, botones y espaciados de ambos
+// paneles a la vez). Se guarda en memoria durante la sesión: si cierras y
+// vuelves a abrir un panel, conserva el último nivel elegido.
+let CD_ESCALA_UI = 1;
+const CD_ESCALA_PASO = 0.1;
+const CD_ESCALA_MIN = 0.6;
+const CD_ESCALA_MAX = 1.6;
+
+function cdAplicarEscala(delta) {
+  CD_ESCALA_UI = Math.min(CD_ESCALA_MAX, Math.max(CD_ESCALA_MIN, +(CD_ESCALA_UI + delta).toFixed(2)));
+  const panelSeguimiento = document.querySelector('#PanelSeguimientoDoc');
+  if (panelSeguimiento) panelSeguimiento.style.zoom = CD_ESCALA_UI;
+  const panelClasificador = document.querySelector('#PanelClasificadorDoc');
+  if (panelClasificador) panelClasificador.style.zoom = CD_ESCALA_UI;
+  document.querySelectorAll('.cd-escala-label').forEach(el => { el.textContent = Math.round(CD_ESCALA_UI * 100) + '%'; });
+}
+
 function cdCrearPanel() {
   const existente = document.querySelector('#PanelSeguimientoDoc');
   if (existente) existente.remove();
   const cont = document.createElement('div');
   cont.id = 'PanelSeguimientoDoc';
   cont.style.cssText = 'position:fixed; top:20px; right:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:460px; max-height:88vh; overflow-y:auto; font-family:sans-serif; font-size:13px;';
+  cont.style.zoom = CD_ESCALA_UI;
   cont.innerHTML = `
     <div id="PSD_Encabezado" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:10px; cursor:grab; user-select:none;">
       <span>🔎 Seguimiento de Documento — ControlDoc</span>
-      <div style="display:flex; gap:4px;">
+      <div style="display:flex; align-items:center; gap:2px;">
+        <button id="PSD_EscalaMenos" title="Reducir tamaño de la interfaz" style="background:none; border:none; font-size:14px; cursor:pointer; padding:2px 4px;">🔍➖</button>
+        <span class="cd-escala-label" style="font-size:11px; color:#6b7280; min-width:34px; text-align:center;">${Math.round(CD_ESCALA_UI * 100)}%</span>
+        <button id="PSD_EscalaMas" title="Aumentar tamaño de la interfaz" style="background:none; border:none; font-size:14px; cursor:pointer; padding:2px 4px;">🔍➕</button>
         <button id="PSD_Minimizar" title="Minimizar" style="background:none; border:none; font-size:16px; cursor:pointer; padding:2px 6px;">➖</button>
         <button id="PSD_Cerrar" title="Cerrar" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; padding:2px 6px;">✕</button>
       </div>
@@ -622,6 +643,13 @@ function cdCrearPanel() {
   cdHabilitarArrastre(cont, document.querySelector('#PSD_Encabezado'));
   document.querySelector('#PSD_Cerrar').onclick = (e) => { e.stopPropagation(); cont.remove(); };
   document.querySelector('#PSD_Cerrar').addEventListener('mousedown', (e) => e.stopPropagation());
+
+  const btnEscalaMenos = document.querySelector('#PSD_EscalaMenos');
+  const btnEscalaMas = document.querySelector('#PSD_EscalaMas');
+  btnEscalaMenos.addEventListener('mousedown', (e) => e.stopPropagation());
+  btnEscalaMas.addEventListener('mousedown', (e) => e.stopPropagation());
+  btnEscalaMenos.onclick = () => cdAplicarEscala(-CD_ESCALA_PASO);
+  btnEscalaMas.onclick = () => cdAplicarEscala(CD_ESCALA_PASO);
 
   document.querySelector('#PSD_HeaderHistorial').onclick = () => cd3ToggleSeccion('#PSD_CuerpoHistorial', '#PSD_FlechaHistorial');
   const btnOrden = document.querySelector('#PSD_OrdenHistorial');
@@ -995,7 +1023,7 @@ async function cd2ReasignarADestino(idDocumento, destino, comentario) {
     movioBandeja = true;
   }
 
-  return { idDocumento, radicado: registro.RADICADO, subdireccion: destino.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
+  return { idDocumento, radicado: registro.RADICADO, asunto: registro.DESCRIPCION || '', subdireccion: destino.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
 }
 
 async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
@@ -1048,7 +1076,7 @@ async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, 
   }
 
   return {
-    idDocumento, radicado: registro.RADICADO,
+    idDocumento, radicado: registro.RADICADO, asunto: registro.DESCRIPCION || '',
     destinos: destinos.map(({ sub, jefe }) => ({ nombre: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
     resultado: data, validaciones, movioBandeja,
   };
@@ -1061,7 +1089,8 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgr
     try {
       const r = await cd2ReasignarDocumento(id, claveSubdireccion, comentario);
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado, 'validación:', r.validacion);
-      cdBitacoraRegistrar({ accion: 'Reasignación (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.subdireccion, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cdBitacoraRegistrar({ accion: 'Reasignación (lote manual)', idc: r.idDocumento, radicado: r.radicado, asunto: r.asunto, destino: r.subdireccion, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cd3SincronizarTrasAccionExterna(id, r.movioBandeja);
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -1077,7 +1106,8 @@ async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentar
       const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
       const destinoTexto = r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + ');
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', destinoTexto, r.resultado);
-      cdBitacoraRegistrar({ accion: 'Reasignación multi-destino (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.destinos.map(d => d.nombre).join(' + '), funcionario: r.destinos.map(d => d.jefe).join(' + '), comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cdBitacoraRegistrar({ accion: 'Reasignación multi-destino (lote manual)', idc: r.idDocumento, radicado: r.radicado, asunto: r.asunto, destino: r.destinos.map(d => d.nombre).join(' + '), funcionario: r.destinos.map(d => d.jefe).join(' + '), comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cd3SincronizarTrasAccionExterna(id, r.movioBandeja);
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -1245,17 +1275,45 @@ async function cd3EjecutarClasificacion() {
   } else {
     CD3_DOCUMENTOS = pendientes.map(doc => {
       const { prediccion, esPriorizacion, confianza } = cd3ClasificarDocumento(doc);
-      return { idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)', prediccion, esPriorizacion, confianza, manual: prediccion, estadoEnvio: null, mensajeEstado: '' };
+      return {
+        idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)',
+        fechaAsignacion: cdParseAspDate(doc.FECHAASIGNO), fechaRadicacion: null,
+        prediccion, esPriorizacion, confianza, manual: prediccion, estadoEnvio: null, mensajeEstado: '',
+      };
     });
     CD3_FILA_SELECCIONADA = null;
     estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s).`;
     cd3RenderizarResultados();
+    cd3CargarFechasRadicacionEnSegundoPlano();
   }
 
   btn.disabled = false;
   btn.style.opacity = '1';
   btn.style.cursor = 'pointer';
   btn.textContent = textoOriginal;
+}
+
+// Fecha de radicación (mejora adicional): no viene en la bandeja, hay que
+// pedirla con INFORMACIONGENERALDOCUMENTO (la misma llamada del panel de
+// Seguimiento) — se hace en segundo plano, con poca concurrencia para no
+// sobrecargar el servidor con una lista larga, y sin bloquear el resto del
+// panel. Cada casilla arranca en "⏳" y se llena sola cuando responde.
+const CD3_CACHE_FECHA_RADICACION = {};
+const CD3_CONCURRENCIA_FECHAS = 5;
+
+async function cd3CargarFechasRadicacionEnSegundoPlano() {
+  const pendientes = CD3_DOCUMENTOS.filter(d => CD3_CACHE_FECHA_RADICACION[d.idc] === undefined);
+  await ejecutarConPool(pendientes, CD3_CONCURRENCIA_FECHAS, async (doc) => {
+    let fecha = '—';
+    try {
+      const ficha = await cdObtenerFicha(doc.idc);
+      fecha = ficha['FECHA RADICACIÓN'] || '—';
+    } catch (e) { /* se deja en "—" si falla */ }
+    CD3_CACHE_FECHA_RADICACION[doc.idc] = fecha;
+    doc.fechaRadicacion = fecha;
+    const span = document.querySelector(`#cd3-fecharad-${doc.idc}`);
+    if (span) span.textContent = fecha;
+  });
 }
 
 function cd3ProgramarLimpieza(doc) {
@@ -1266,6 +1324,19 @@ function cd3ProgramarLimpieza(doc) {
       cd3RenderizarResultados();
     }
   }, 5000);
+}
+
+// Si el IDC que se acaba de reasignar/cerrar por un camino "externo" a la
+// tabla (Reasignación Manual o el buscador ad-hoc, que trabajan con IDs
+// sueltos) también está siendo mostrado ahí mismo, esto lo refleja: lo marca
+// ✅/❌ y lo hace desaparecer igual que cuando se reasigna desde la fila.
+function cd3SincronizarTrasAccionExterna(idcComoTexto, exito, mensajeError) {
+  const doc = CD3_DOCUMENTOS.find(d => String(d.idc) === String(idcComoTexto).trim());
+  if (!doc) return;
+  doc.estadoEnvio = exito ? 'ok' : 'error';
+  doc.mensajeEstado = exito ? '' : (mensajeError || 'El documento sigue en tu bandeja: la acción no se completó.');
+  cd3RenderizarResultados();
+  if (exito) cd3ProgramarLimpieza(doc);
 }
 
 function cd3AplicarResaltado() {
@@ -1311,12 +1382,16 @@ function cd3RenderizarResultados() {
     return `
     <tr data-fila-idx="${i}" style="border-bottom:1px solid #e5e7eb; cursor:pointer; ${seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : ''}">
       <td style="padding:5px; font-weight:bold;">${d.idc}</td>
-      <td style="padding:5px; max-width:120px;">
-        <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${d.asunto}">${d.asunto}</div>
-        <div style="display:flex; flex-wrap:wrap; gap:2px; margin-top:3px;">
-          <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="padding:1px 4px; font-size:9px; background:#e5e7eb; border:none; border-radius:3px; cursor:pointer;">📋 IDC</button>
-          <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="padding:1px 4px; font-size:9px; background:#e5e7eb; border:none; border-radius:3px; cursor:pointer;">📋 Rad</button>
-          <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="padding:1px 4px; font-size:9px; background:#e5e7eb; border:none; border-radius:3px; cursor:pointer;">📋 Asu</button>
+      <td style="padding:5px; max-width:260px;">
+        <div style="white-space:normal; word-break:break-word;">${d.asunto}</div>
+        <div style="color:#9ca3af; font-size:10px; margin-top:3px; line-height:1.5;">
+          📅 Radicación: <span id="cd3-fecharad-${d.idc}">${d.fechaRadicacion || '⏳'}</span><br>
+          📤 Asignación (remitido): ${d.fechaAsignacion || '—'}
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">
+          <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDC</button>
+          <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Rad</button>
+          <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Asu</button>
         </div>
       </td>
       <td style="padding:5px;">
@@ -1643,7 +1718,8 @@ async function cd3ReasignarAdHoc() {
     const id = idRaw.trim();
     try {
       const r = await cd2ReasignarADestino(id, destino, comentario);
-      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, destino: nombre, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, asunto: r.asunto, destino: nombre, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cd3SincronizarTrasAccionExterna(id, r.movioBandeja);
       if (r.movioBandeja) exitosos++; else fallidos++;
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', nombre, r.resultado);
     } catch (e) { fallidos++; console.log('❌', id, e.message); }
@@ -1658,7 +1734,8 @@ function cd3CrearPanel() {
   if (existente) existente.remove();
   const cont = document.createElement('div');
   cont.id = 'PanelClasificadorDoc';
-  cont.style.cssText = 'position:fixed; top:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:540px; max-height:88vh; overflow-y:auto; font-family:sans-serif; font-size:13px;';
+  cont.style.cssText = 'position:fixed; top:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:650px; max-height:88vh; overflow-y:auto; font-family:sans-serif; font-size:13px;';
+  cont.style.zoom = CD_ESCALA_UI;
 
   const palabrasHtml = Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `
     <div style="margin-bottom:8px;">
@@ -1677,7 +1754,10 @@ function cd3CrearPanel() {
   cont.innerHTML = `
     <div id="PCD_EncabezadoGeneral" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:12px; cursor:grab; user-select:none;">
       <span>🔍 Clasificador por Competencia</span>
-      <div style="display:flex; gap:4px;">
+      <div style="display:flex; align-items:center; gap:2px;">
+        <button id="PCD_EscalaMenos" title="Reducir tamaño de la interfaz" style="background:none; border:none; font-size:14px; cursor:pointer; padding:2px 4px;">🔍➖</button>
+        <span class="cd-escala-label" style="font-size:11px; color:#6b7280; min-width:34px; text-align:center;">${Math.round(CD_ESCALA_UI * 100)}%</span>
+        <button id="PCD_EscalaMas" title="Aumentar tamaño de la interfaz" style="background:none; border:none; font-size:14px; cursor:pointer; padding:2px 4px;">🔍➕</button>
         <button id="PCD_MinimizarTodo" title="Minimizar panel completo" style="background:none; border:none; font-size:16px; cursor:pointer;">➖</button>
         <button id="PCD_Cerrar" title="Cerrar" style="background:none; border:none; font-size:16px; cursor:pointer;">✕</button>
       </div>
@@ -1705,10 +1785,10 @@ function cd3CrearPanel() {
         </div>
       </div>
       <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec3" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec3">▾</span> 📊 Resultados <span id="PCD_ContadorResultados" style="color:#6b7280; font-weight:normal;"></span></span>
+        <div id="PCD_HeaderComentarios" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
+          <span><span id="PCD_FlechaComentarios">▸</span> 💬 Comentarios de gestión</span>
         </div>
-        <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
+        <div id="PCD_CuerpoComentarios" style="display:none; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
           <select id="PCD_ComentarioReasignacionLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
             <option value="">— Elegir comentario predefinido —</option>
@@ -1722,7 +1802,13 @@ function cd3CrearPanel() {
             ${CD3_COMENTARIOS_CIERRE.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
           </select>
           <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
-
+        </div>
+      </div>
+      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
+        <div id="PCD_HeaderSec3" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
+          <span><span id="PCD_FlechaSec3">▾</span> 📊 Resultados <span id="PCD_ContadorResultados" style="color:#6b7280; font-weight:normal;"></span></span>
+        </div>
+        <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">Filtrar tabla</label>
           <select id="PCD_FiltroTabla" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
             <option value="todos">📋 Todos</option>
@@ -1788,6 +1874,13 @@ function cd3CrearPanel() {
   document.querySelector('#PCD_Cerrar').onclick = (e) => { e.stopPropagation(); cont.remove(); };
   document.querySelector('#PCD_Cerrar').addEventListener('mousedown', (e) => e.stopPropagation());
 
+  const btnEscalaMenosPCD = document.querySelector('#PCD_EscalaMenos');
+  const btnEscalaMasPCD = document.querySelector('#PCD_EscalaMas');
+  btnEscalaMenosPCD.addEventListener('mousedown', (e) => e.stopPropagation());
+  btnEscalaMasPCD.addEventListener('mousedown', (e) => e.stopPropagation());
+  btnEscalaMenosPCD.onclick = () => cdAplicarEscala(-CD_ESCALA_PASO);
+  btnEscalaMasPCD.onclick = () => cdAplicarEscala(CD_ESCALA_PASO);
+
   let minimizadoTodo = false;
   const btnMinTodo = document.querySelector('#PCD_MinimizarTodo');
   const cuerpoGeneral = document.querySelector('#PCD_CuerpoGeneral');
@@ -1795,12 +1888,13 @@ function cd3CrearPanel() {
   btnMinTodo.onclick = () => {
     minimizadoTodo = !minimizadoTodo;
     cuerpoGeneral.style.display = minimizadoTodo ? 'none' : 'block';
-    cont.style.width = minimizadoTodo ? '300px' : '540px';
+    cont.style.width = minimizadoTodo ? '300px' : '650px';
     btnMinTodo.textContent = minimizadoTodo ? '🔼' : '➖';
   };
 
   document.querySelector('#PCD_HeaderSec1').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec1', '#PCD_FlechaSec1');
   document.querySelector('#PCD_HeaderSec2').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec2', '#PCD_FlechaSec2');
+  document.querySelector('#PCD_HeaderComentarios').onclick = () => cd3ToggleSeccion('#PCD_CuerpoComentarios', '#PCD_FlechaComentarios');
   document.querySelector('#PCD_HeaderSec3').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec3', '#PCD_FlechaSec3');
   document.querySelector('#PCD_HeaderSec4').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec4', '#PCD_FlechaSec4');
   document.querySelector('#PCD_HeaderSec5').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec5', '#PCD_FlechaSec5');
