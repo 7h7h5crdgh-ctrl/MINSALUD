@@ -35,7 +35,14 @@ const CONFIG_DEPENDENCIAS = {
   },
   saludAmbiental: {
     nombre: 'Salud Ambiental y Cambio Climático', idOficina: 49, color: '#059669', emoji: '🌱',
-    palabras: 'COCA, CULTIVO, CULTIVOS, GLUFOSINATO, AMONIO, MATERIALES, MATERIAL, AMBIENTE, CAMBIO CLIMATICO, CAMBIO CLIMÁTICO, CALIDAD DEL AIRE, RESIDUOS, AGUA POTABLE, SANEAMIENTO, AGUA PARA EL CONSUMO HUMANO, PISCINAS, PISCINA, CADAVER, CADÁVER, PESTISIDAS, MINERIA ILEGAL, MINERÍA ILEGAL, T-236, T 236, GLIFOSATO, TANATOPRAXIA, INCINERACIÓN, INCINERACION, CREMACIÓN, CREMACION, RESIDUOS, PISA, POLÍTICA INTEGRAL DE SALUD AMBIENTAL, POLITICA INTEGRAL DE SALUD AMBIENTAL, SUISA, SISTEMA UNIFICADO DE INFORMACIÓN DE SALUD AMBIENTAL, SISTEMA UNIFICADO DE INFORMACION DE SALUD AMBIENTAL, SANEAMIENTO BASICO, SANEAMIENTO BÁSICO, PIGCCS, PLAN INTEGRAL DE GESTIÓN DEL CAMBIO CLIMATICO DEL SECTOR SALUD, PLAN INTEGRAL DE GESTION DEL CAMBIO CLIMATICO DEL SECTOR SALUD, RUIDO, COSMETICOS, COSMÉTICOS, GETSA, GESTIÓN TERRITORIAL EN SALUD AMBIENTAL, GESTION TERRITORIAL EN SALUD AMBIENTAL, VACUNA ANTIRRABICA, VACUNA ANTIRRÁBICA, PERRO, PERROS, GATO, GATOS, COTSA, CONSEJOS TERRITORIALES DE SALUD AMBIENTAL CONASA, SEGURIDAD VIAL, RESOLUCIÓN 0234 DE 2026, RESOLUCION 0234 DE 2026, RESOLUCIÓN 0929 DE 2026, RESOLUCION 0929 DE 2026, PNEET, CALIDAD DEL AIRE EN EL INTERIOR, SENTENCIA T614, T-614, T 614, PTACCA, PLANES TERRITORIALES EN ADAPTACIÓN AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLANES TERRITORIALES EN ADAPTACION AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLAGISIDAS, PESTISIDAS, RESIDUOS, AGUAS RESIDUALES, CEMENTERIOS, ENTORNOS SALUDABLES, DECRETO 1085 DE 2021, EISA, ESTRATEGIA INTEGRADORA DE SALUD AMBIENTAL, MERCURIO, METALES, T-622 DE 2016, T 622, IPIAC, ',
+    // Nota de pesos: AMBIENTE, MATERIAL/MATERIALES, RUIDO, PERRO/PERROS/GATO/GATOS
+    // y CULTIVO/CULTIVOS son palabras genéricas que aparecen en muchos contextos
+    // ajenos a esta dependencia — se les bajó el peso a 0.3-0.5 para que por sí
+    // solas casi no ganen la clasificación, pero sí sumen si aparecen junto a
+    // otras más específicas. Números de resolución/decreto/sentencia son muy
+    // específicos y casi nunca dan falso positivo, así que pesan más (2).
+    excluir: 'AMBIENTE LABORAL, CLIMA LABORAL',
+    palabras: 'COCA, CULTIVO:0.4, CULTIVOS:0.4, GLUFOSINATO:1.5, AMONIO:1.2, MATERIALES:0.3, MATERIAL:0.3, AMBIENTE:0.3, CAMBIO CLIMATICO, CAMBIO CLIMÁTICO, CALIDAD DEL AIRE, RESIDUOS, AGUA POTABLE, SANEAMIENTO, AGUA PARA EL CONSUMO HUMANO, PISCINAS, PISCINA, CADAVER, CADÁVER, PESTISIDAS, MINERIA ILEGAL, MINERÍA ILEGAL, T-236:2, T 236:2, GLIFOSATO, TANATOPRAXIA, INCINERACIÓN, INCINERACION, CREMACIÓN, CREMACION, RESIDUOS, PISA, POLÍTICA INTEGRAL DE SALUD AMBIENTAL, POLITICA INTEGRAL DE SALUD AMBIENTAL, SUISA, SISTEMA UNIFICADO DE INFORMACIÓN DE SALUD AMBIENTAL, SISTEMA UNIFICADO DE INFORMACION DE SALUD AMBIENTAL, SANEAMIENTO BASICO, SANEAMIENTO BÁSICO, PIGCCS, PLAN INTEGRAL DE GESTIÓN DEL CAMBIO CLIMATICO DEL SECTOR SALUD, PLAN INTEGRAL DE GESTION DEL CAMBIO CLIMATICO DEL SECTOR SALUD, RUIDO:0.5, COSMETICOS, COSMÉTICOS, GETSA, GESTIÓN TERRITORIAL EN SALUD AMBIENTAL, GESTION TERRITORIAL EN SALUD AMBIENTAL, VACUNA ANTIRRABICA, VACUNA ANTIRRÁBICA, PERRO:0.5, PERROS:0.5, GATO:0.5, GATOS:0.5, COTSA, CONSEJOS TERRITORIALES DE SALUD AMBIENTAL CONASA, SEGURIDAD VIAL, RESOLUCIÓN 0234 DE 2026:2, RESOLUCION 0234 DE 2026:2, RESOLUCIÓN 0929 DE 2026:2, RESOLUCION 0929 DE 2026:2, PNEET, CALIDAD DEL AIRE EN EL INTERIOR, SENTENCIA T614:2, T-614:2, T 614:2, PTACCA, PLANES TERRITORIALES EN ADAPTACIÓN AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLANES TERRITORIALES EN ADAPTACION AL CAMBIO CLIMATICO DESDE SALUD AMBIENTAL, PLAGISIDAS, PESTISIDAS, RESIDUOS, AGUAS RESIDUALES, CEMENTERIOS, ENTORNOS SALUDABLES, DECRETO 1085 DE 2021:2, EISA, ESTRATEGIA INTEGRADORA DE SALUD AMBIENTAL, MERCURIO, METALES, T-622 DE 2016:2, T 622:2, IPIAC, ',
   },
   nutricion: {
     nombre: 'Nutrición, Alimentación y Soberanía', idOficina: 53, color: '#d97706', emoji: '🍎',
@@ -43,7 +50,7 @@ const CONFIG_DEPENDENCIAS = {
   },
   promocion: {
     nombre: 'Promoción de la Salud', idOficina: 130, color: '#0891b2', emoji: '💙',
-    palabras: 'MUERTES VIOLENTAS, FEMINICIDIOFEMICIDIO, PISIS, MUERTE DIGNA, MORRIR CON DIGNIDAD, SUBDIRECCIÓN DE PROMOCIÓN DE LA SALUD, SUBDIRECCION DE PROMOCION DE LA SALUD, SUBDORECCIÓN DE PROMOCION DE LA SALUD, SUBDIRECCION DE PROMOCIÓN DE LA SALUD, EUTANASIA, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
+    palabras: 'MUERTES VIOLENTAS, FEMINICIDIO, FEMICIDIO, PISIS, MUERTE DIGNA, MORRIR CON DIGNIDAD, SUBDIRECCIÓN DE PROMOCIÓN DE LA SALUD:2, SUBDIRECCION DE PROMOCION DE LA SALUD:2, SUBDORECCIÓN DE PROMOCION DE LA SALUD:2, SUBDIRECCION DE PROMOCIÓN DE LA SALUD:2, EUTANASIA, VIH, PEP, PREP, PROFILAXIS, SEXUALIDAD, DERECHOS SEXUALES, DERECHOS REPRODUCTIVOS, ANTICONCEPCION, ANTICONCEPCIÓN, INFERTILIDAD, AUTONOMIA REPRODUCTIVA, AUTONOMÍA REPRODUCTIVA, INTERRUPCION VOLUNTARIA DEL EMBARAZO, INTERRUPCIÓN VOLUNTARIA DEL EMBARAZO, IVE:1.5, SALUD MENSTRUAL, CUIDADO MENSTRUAL, ENDOMETRIOSIS, SALUD SEXUAL, SALUD REPRODUCTIVA, NINAS NINOS Y ADOLESCENTES, NIÑAS NIÑOS Y ADOLESCENTES, SALUD TRANS, VIOLENCIAS BASADAS EN GENERO, VIOLENCIAS BASADAS EN GÉNERO, VIDA LIBRE DE VIOLENCIAS, ATENCION A VICTIMAS, ATENCIÓN A VÍCTIMAS, SIVIGE:1.5, ABORDAJE DEL VIH, INFECCION POR VIH, INFECCIÓN POR VIH, HEPATITIS, ETMI PLUS, ASPECTOS BIOETICOS, ASPECTOS BIOÉTICOS, MUERTE DIGNA, SUBROGACION UTERINA, SUBROGACIÓN UTERINA, TRIAGE ETICO, TRIAGE ÉTICO, POLITICA NACIONAL DE SEXUALIDAD, POLÍTICA NACIONAL DE SEXUALIDAD',
   },
 
   // ─── Nueva dependencia, agregada tal como pediste ───
@@ -53,21 +60,30 @@ const CONFIG_DEPENDENCIAS = {
   // IDUNIDADADMINISTRATIVA que te devuelva.
   saludMental: {
     nombre: 'Salud Mental y Convivencia', idOficina: 132, idUnidad: 2, color: '#9333ea', emoji: '🧠',
-    palabras: 'SUICIDIO, SALUD MENTAL, CONVIVENCIA, CONVIVENCIA SOCIAL, PREVENCION DEL SUICIDIO, PREVENCIÓN DEL SUICIDIO, CONSUMO DE SUSTANCIAS PSICOACTIVAS, SUSTANCIAS PSICOACTIVAS, SALUD MENTAL Y CONVIVENCIA',
+    palabras: 'SUICIDIO:2, SALUD MENTAL:1.5, CONVIVENCIA, CONVIVENCIA SOCIAL, PREVENCION DEL SUICIDIO:2, PREVENCIÓN DEL SUICIDIO:2, CONSUMO DE SUSTANCIAS PSICOACTIVAS, SUSTANCIAS PSICOACTIVAS, SALUD MENTAL Y CONVIVENCIA:2',
   },
 
   equiposbasicos: {
     nombre: 'Subdireccion de Fortalecimiento del Acceso a la Salud y Equipos Basicos', idOficina: 141, idUnidad: 2, color: '#93c5fd', emoji: '🚑',
-    palabras: 'EQUIPOS BÁSICOS, EQUIPOS BASICOS, EBS',
+    palabras: 'EQUIPOS BÁSICOS:1.5, EQUIPOS BASICOS:1.5, EBS:0.5',
   },
 
   ciudadanias: {
     nombre: 'Direccion de Ciudadanias, Equidad y Salud', idOficina: 133, idUnidad: 2, color: '#facc15', emoji: '👥',
-    palabras: 'ALERTA ROSA, LEY 2326 DE 2023',
+    palabras: 'ALERTA ROSA:2, LEY 2326 DE 2023:2',
   },
 
 };
 // --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLENAR LA NUEVA ENTRADA DE LA SUBDIRECCIÓN/DIRECCIÓN]
+//
+// Formato de "palabras": cada palabra puede llevar opcionalmente ":PESO" al
+// final (ej. "T-080:2"). Sin ":PESO" el peso por defecto es 1. Usa pesos
+// bajos (0.3-0.5) en palabras genéricas que dan muchos falsos positivos, y
+// altos (1.5-2) en frases muy específicas que casi nunca fallan.
+//
+// Formato de "excluir" (opcional): frases separadas por coma que, si
+// aparecen en el documento, le restan puntos a esa dependencia (para
+// contrarrestar falsos positivos de una palabra genérica de su lista).
 
 // Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
 // masivos ("Reasignar clasificados" y "Reasignación Manual"). Pediste 5 en
@@ -234,6 +250,123 @@ async function cdObtenerAsociados(idDocumento) {
   return arr || [];
 }
 
+// ── Historial de búsquedas en caché (mejora 1): guarda cada búsqueda ya
+// resuelta (ficha + flujo) para volver a mostrarla con un clic sin llamar
+// ningún endpoint de nuevo. Vive solo en esta sesión del script.
+const CD_HISTORIAL = [];
+const CD_HISTORIAL_MAX = 50;
+
+function cdRegistrarHistorial(entrada) {
+  const idxExistente = CD_HISTORIAL.findIndex(e => e.idc === entrada.idc);
+  if (idxExistente !== -1) CD_HISTORIAL.splice(idxExistente, 1);
+  CD_HISTORIAL.unshift(entrada);
+  if (CD_HISTORIAL.length > CD_HISTORIAL_MAX) CD_HISTORIAL.length = CD_HISTORIAL_MAX;
+}
+
+function cdRenderizarHistorial() {
+  const cont = document.querySelector('#PSD_HistorialLista');
+  if (!cont) return;
+  if (!CD_HISTORIAL.length) {
+    cont.innerHTML = '<div style="color:#9ca3af; font-size:11px; padding:6px 0;">Aún no has buscado ningún documento en esta sesión.</div>';
+    return;
+  }
+  cont.innerHTML = CD_HISTORIAL.map((e, i) => `
+    <div class="psd-historial-item" data-idx="${i}" style="padding:6px 8px; border-bottom:1px solid #f3f4f6; cursor:pointer; font-size:11px;">
+      <b>#${i + 1} — IDC ${e.idc}</b><br>
+      <span style="color:#6b7280;">${cdEscaparHtml((e.detalle || '(sin asunto)')).slice(0, 80)}</span>
+    </div>
+  `).join('');
+  cont.querySelectorAll('.psd-historial-item').forEach(el => {
+    el.onclick = () => cdCargarDesdeHistorial(Number(el.dataset.idx));
+    el.onmouseenter = () => el.style.background = '#f3f4f6';
+    el.onmouseleave = () => el.style.background = '';
+  });
+}
+
+function cdEscaparHtml(str) {
+  return String(str || '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+// Pinta en el panel una entrada ya guardada, sin volver a llamar ControlDoc.
+function cdCargarDesdeHistorial(indice) {
+  const entrada = CD_HISTORIAL[indice];
+  if (!entrada) return;
+  const contenido = document.querySelector('#PSD_Contenido');
+  contenido.innerHTML = cdPlantillaBase(entrada.doc);
+  document.querySelector('#PSD_Ficha').innerHTML = entrada.ficha ? cdPlantillaFicha(entrada.ficha) : '<div style="color:#ea580c;">Sin ficha en caché.</div>';
+  document.querySelector('#PSD_Flujo').innerHTML = cdPlantillaFlujo(entrada.pasos || []);
+  const badge = document.querySelector('#PSD_Badge');
+  if (badge) {
+    const estado = cdEstadoGlobal((entrada.pasos || [])[0], entrada.doc.STRESTADODOCUMENTO);
+    badge.textContent = estado.texto; badge.style.color = estado.color; badge.style.background = estado.fondo;
+  }
+  cdVincularBotones(entrada.idc, entrada.numAdjuntos);
+  document.querySelector('#PSD_Input').value = entrada.idc;
+}
+
+// ── Conteo de adjuntos sin librerías externas (mejora 2): se reutiliza el
+// mismo POST de GuardarAdjuntosZIP (no cambia nada en el servidor) y se lee
+// el "End Of Central Directory" del ZIP resultante, que trae el número total
+// de archivos — así no hace falta descomprimir nada para contar.
+const CD_CACHE_ADJUNTOS = {};
+
+function cdContarEntradasZip(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const maxComentario = 65535;
+  const desde = Math.max(0, bytes.length - 22 - maxComentario);
+  for (let i = bytes.length - 22; i >= desde; i--) {
+    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+      return bytes[i + 10] | (bytes[i + 11] << 8); // total de entradas, 2 bytes little-endian
+    }
+  }
+  return null;
+}
+
+async function cdContarAdjuntos(idDocumento) {
+  if (Object.prototype.hasOwnProperty.call(CD_CACHE_ADJUNTOS, idDocumento)) return CD_CACHE_ADJUNTOS[idDocumento];
+  try {
+    const resp = await cdFetchPost(CD_CONFIG.urlGuardarZip, { IDDOCUMENTO: idDocumento, DILIGENCIADOS: 'NO' });
+    const data = await resp.json();
+    if (!data || data.RESPUESTA !== true || !data.VALORESPUESTA) { CD_CACHE_ADJUNTOS[idDocumento] = 0; return 0; }
+    const valor = data.VALORESPUESTA;
+    if (typeof valor !== 'string' || !valor.startsWith('http')) { CD_CACHE_ADJUNTOS[idDocumento] = null; return null; }
+    const fileResp = await fetch(valor, { credentials: 'same-origin' });
+    if (!fileResp.ok) { CD_CACHE_ADJUNTOS[idDocumento] = null; return null; }
+    const buffer = await fileResp.arrayBuffer();
+    const n = cdContarEntradasZip(buffer);
+    CD_CACHE_ADJUNTOS[idDocumento] = n;
+    return n;
+  } catch (e) {
+    console.warn('[CD] No se pudo contar adjuntos:', e.message);
+    return null;
+  }
+}
+
+// Conecta los botones de acción de un documento ya pintado en el panel, y
+// actualiza el contador de adjuntos en el botón correspondiente.
+function cdVincularBotones(idDocumento, numAdjuntosCache) {
+  document.querySelector('#PSD_BtnPreviewPdf').onclick = () => cdPrevisualizarPdf(idDocumento);
+  document.querySelector('#PSD_BtnDescargarPdf').onclick = () => cdDescargarPdf(idDocumento);
+  document.querySelector('#PSD_BtnAdjuntos').onclick = () => cdDescargarAdjuntos(idDocumento);
+  document.querySelector('#PSD_BtnAsociados').onclick = () => cdMostrarAsociados(idDocumento);
+
+  const btnAdjuntos = document.querySelector('#PSD_BtnAdjuntos');
+  const pintarContador = (n) => {
+    if (n === null || n === undefined) { btnAdjuntos.textContent = '📎 Descargar Adjuntos'; return; }
+    btnAdjuntos.textContent = n === 0 ? '📎 Sin adjuntos' : `📎 Adjuntos (${n})`;
+  };
+  if (numAdjuntosCache !== undefined) {
+    pintarContador(numAdjuntosCache);
+  } else {
+    btnAdjuntos.textContent = '📎 Adjuntos (…)';
+    cdContarAdjuntos(idDocumento).then(n => {
+      pintarContador(n);
+      const entrada = CD_HISTORIAL.find(e => e.idc === idDocumento);
+      if (entrada) entrada.numAdjuntos = n;
+    });
+  }
+}
+
 // Ayuda a encontrar el IDOFICINAPRODUCTORA de una dependencia nueva.
 // Úsalo así en la consola, con el panel ya cargado:
 //   cdBuscarOficinaPorNombre('SALUD MENTAL')
@@ -393,6 +526,14 @@ function cdCrearPanel() {
         <input id="PSD_Input" type="text" placeholder="IDC (2306470) o Radicado" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px;">
         <button id="PSD_Buscar" style="padding:6px 12px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Buscar</button>
       </div>
+      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
+        <div id="PSD_HeaderHistorial" style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#f9fafb; cursor:pointer; font-size:12px; font-weight:bold;">
+          <span><span id="PSD_FlechaHistorial">▸</span> 🕘 Historial de búsquedas</span>
+        </div>
+        <div id="PSD_CuerpoHistorial" style="display:none; max-height:160px; overflow-y:auto;">
+          <div id="PSD_HistorialLista"></div>
+        </div>
+      </div>
       <div id="PSD_Contenido"></div>
     </div>
   `;
@@ -400,6 +541,9 @@ function cdCrearPanel() {
   cdHabilitarArrastre(cont, document.querySelector('#PSD_Encabezado'));
   document.querySelector('#PSD_Cerrar').onclick = (e) => { e.stopPropagation(); cont.remove(); };
   document.querySelector('#PSD_Cerrar').addEventListener('mousedown', (e) => e.stopPropagation());
+
+  document.querySelector('#PSD_HeaderHistorial').onclick = () => cd3ToggleSeccion('#PSD_CuerpoHistorial', '#PSD_FlechaHistorial');
+  cdRenderizarHistorial();
 
   let minimizado = false;
   const btnMin = document.querySelector('#PSD_Minimizar');
@@ -441,21 +585,29 @@ async function cdEjecutarBusqueda() {
   }
   const idDocumento = doc.IDDOCUMENTO, radicado = doc.RADICADO;
   contenido.innerHTML = cdPlantillaBase(doc);
-  cdObtenerFicha(idDocumento).then(ficha => {
+  cdVincularBotones(idDocumento);
+
+  let ficha = null, pasos = [];
+  try {
+    ficha = await cdObtenerFicha(idDocumento);
     document.querySelector('#PSD_Ficha').innerHTML = cdPlantillaFicha(ficha);
-  }).catch(() => { document.querySelector('#PSD_Ficha').innerHTML = '<div style="color:#ea580c;">No se pudo cargar la ficha.</div>'; });
-  cdObtenerFlujo(idDocumento, radicado).then(pasos => {
+  } catch (e) {
+    document.querySelector('#PSD_Ficha').innerHTML = '<div style="color:#ea580c;">No se pudo cargar la ficha.</div>';
+  }
+  try {
+    pasos = await cdObtenerFlujo(idDocumento, radicado);
     document.querySelector('#PSD_Flujo').innerHTML = cdPlantillaFlujo(pasos);
     const badge = document.querySelector('#PSD_Badge');
     if (badge) {
       const estado = cdEstadoGlobal(pasos[0], doc.STRESTADODOCUMENTO);
       badge.textContent = estado.texto; badge.style.color = estado.color; badge.style.background = estado.fondo;
     }
-  }).catch(() => { document.querySelector('#PSD_Flujo').innerHTML = '<div style="color:#ea580c;">No se pudo cargar el flujo.</div>'; });
-  document.querySelector('#PSD_BtnPreviewPdf').onclick = () => cdPrevisualizarPdf(idDocumento);
-  document.querySelector('#PSD_BtnDescargarPdf').onclick = () => cdDescargarPdf(idDocumento);
-  document.querySelector('#PSD_BtnAdjuntos').onclick = () => cdDescargarAdjuntos(idDocumento);
-  document.querySelector('#PSD_BtnAsociados').onclick = () => cdMostrarAsociados(idDocumento);
+  } catch (e) {
+    document.querySelector('#PSD_Flujo').innerHTML = '<div style="color:#ea580c;">No se pudo cargar el flujo.</div>';
+  }
+
+  cdRegistrarHistorial({ idc: idDocumento, radicado, detalle: (ficha && ficha['DETALLE']) || doc.DESCRIPCION || '', doc, ficha, pasos });
+  cdRenderizarHistorial();
 }
 
 function cdPlantillaBase(doc) {
@@ -469,14 +621,14 @@ function cdPlantillaBase(doc) {
       </div>
       <span id="PSD_Badge" style="padding:3px 10px; border-radius:12px; font-size:11px; font-weight:bold;">Cargando...</span>
     </div>
+    <div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px;">
+      <button id="PSD_BtnPreviewPdf" style="flex:1; padding:4px; font-size:11px; background:#e5e7eb; border:none; border-radius:5px; cursor:pointer;">👁 Previsualizar</button>
+      <button id="PSD_BtnDescargarPdf" style="flex:1; padding:4px; font-size:11px; background:#2563eb; color:#fff; border:none; border-radius:5px; cursor:pointer;">📄 PDF</button>
+      <button id="PSD_BtnAdjuntos" style="flex:1; padding:4px; font-size:11px; background:#2563eb; color:#fff; border:none; border-radius:5px; cursor:pointer;">📎 Adjuntos</button>
+      <button id="PSD_BtnAsociados" style="flex:1; padding:4px; font-size:11px; background:#e5e7eb; border:none; border-radius:5px; cursor:pointer;">🔗 Asociados</button>
+    </div>
     <div id="PSD_Ficha" style="margin-bottom:10px; padding:8px; background:#f9fafb; border-radius:6px;">⏳ Cargando ficha...</div>
     <div id="PSD_Flujo" style="margin-bottom:10px; padding:8px; background:#f9fafb; border-radius:6px;">⏳ Cargando flujo...</div>
-    <div style="display:flex; flex-wrap:wrap; gap:6px;">
-      <button id="PSD_BtnPreviewPdf" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">👁 Previsualizar PDF</button>
-      <button id="PSD_BtnDescargarPdf" style="flex:1; padding:6px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer;">📄 Descargar PDF</button>
-      <button id="PSD_BtnAdjuntos" style="flex:1; padding:6px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer;">📎 Descargar Adjuntos</button>
-      <button id="PSD_BtnAsociados" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">🔗 Docs. Asociados</button>
-    </div>
   `;
 }
 
@@ -568,8 +720,59 @@ const CD2_IDACCION_GESTION_EXITOSA = 4;
 const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
 const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
 
+// Comentarios predefinidos que aparecen en el desplegable de cada textbox del
+// panel de resultados. Al elegir uno se copia al cuadro de texto (que sigue
+// siendo 100% editable después). Agrega, quita o edita libremente aquí.
+const CD3_COMENTARIOS_REASIGNACION = [
+  CD2_COMENTARIO_REASIGNACION_DEFAULT,
+  'SE REMITE PARA TRÁMITE Y RESPUESTA DE FONDO POR COMPETENCIA, DENTRO DE LOS TÉRMINOS DE LEY.',
+  'SE ASIGNA PARA REVISIÓN Y RESPUESTA CONJUNTA CON EL ÁREA TÉCNICA CORRESPONDIENTE.',
+];
+const CD3_COMENTARIOS_CIERRE = [
+  CD2_COMENTARIO_CIERRE_DEFAULT,
+  ' --- SE DA RESPUESTA DE FONDO AL PETICIONARIO Y SE CIERRA LA PRESENTE COMUNICACIÓN.',
+  ' --- EL REQUERIMIENTO YA FUE ATENDIDO POR OTRA DEPENDENCIA, SE CIERRA POR DUPLICIDAD.',
+];
+
 const CD2_SUBDIRECCIONES = CONFIG_DEPENDENCIAS;
 const CD2_IDUNIDAD = 2;
+
+// ── Bitácora de acciones (mejora 3): registra cada reasignación/cierre hecho
+// desde el panel, para exportarla luego a un archivo tipo Excel.
+const CD_BITACORA = [];
+
+function cdBitacoraRegistrar({ accion, idc, radicado, asunto, destino, comentario, resultado, detalleResultado }) {
+  CD_BITACORA.push({
+    fecha: new Date().toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'medium' }),
+    accion, idc, radicado: radicado || '', asunto: asunto || '', destino: destino || '',
+    comentario: comentario || '', resultado, detalleResultado: detalleResultado || '',
+  });
+  const el = document.querySelector('#PCD_ContadorBitacora');
+  if (el) el.textContent = `(${CD_BITACORA.length})`;
+}
+
+function cdBitacoraExportarExcel() {
+  if (!CD_BITACORA.length) return alert('Aún no hay acciones registradas para exportar.');
+  const escapar = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const filas = CD_BITACORA.map(e => `
+    <tr>
+      <td>${escapar(e.fecha)}</td><td>${escapar(e.accion)}</td><td>${escapar(e.idc)}</td><td>${escapar(e.radicado)}</td>
+      <td>${escapar(e.asunto)}</td><td>${escapar(e.destino)}</td>
+      <td>${escapar(e.comentario)}</td><td>${escapar(e.resultado)}</td><td>${escapar(e.detalleResultado)}</td>
+    </tr>`).join('');
+  const html = `<html><head><meta charset="UTF-8"></head><body>
+    <table border="1">
+      <tr><th>Fecha</th><th>Acción</th><th>IDC</th><th>Radicado</th><th>Asunto</th><th>Destino</th><th>Comentario</th><th>Resultado</th><th>Detalle</th></tr>
+      ${filas}
+    </table>
+  </body></html>`;
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `Bitacora_ControlDoc_${new Date().toISOString().slice(0, 10)}.xls`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
 
 async function cd2Post(url, paramsObj) {
   const body = new URLSearchParams(paramsObj);
@@ -697,7 +900,7 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     movioBandeja = true;
   }
 
-  return { idDocumento, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
+  return { idDocumento, radicado: registro.RADICADO, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
 }
 
 // Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
@@ -741,7 +944,7 @@ async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, 
   }
 
   return {
-    idDocumento,
+    idDocumento, radicado: registro.RADICADO,
     destinos: destinos.map(({ sub, jefe }) => ({ nombre: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
     resultado: data, validaciones, movioBandeja,
   };
@@ -754,6 +957,7 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgr
     try {
       const r = await cd2ReasignarDocumento(id, claveSubdireccion, comentario);
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado, 'validación:', r.validacion);
+      cdBitacoraRegistrar({ accion: 'Reasignación (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.subdireccion, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -767,7 +971,9 @@ async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentar
     const id = idRaw.trim();
     try {
       const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
-      console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + '), r.resultado);
+      const destinoTexto = r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + ');
+      console.log(r.movioBandeja ? '✅' : '❌', id, '→', destinoTexto, r.resultado);
+      cdBitacoraRegistrar({ accion: 'Reasignación multi-destino (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.destinos.map(d => d.nombre).join(' + '), comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -804,7 +1010,7 @@ async function cd2CerrarPorComentario(idDocumento, comentario) {
     movioBandeja = true;
   }
 
-  return { idDocumento, resultado: data, movioBandeja };
+  return { idDocumento, radicado: registro.RADICADO, resultado: data, movioBandeja };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -837,27 +1043,52 @@ function cd3BuscarPrimeraOcurrencia(texto, palabra) {
   return match ? match.index : -1;
 }
 
+function cd3ParsearPalabras(cadena) {
+  // Acepta "PALABRA" o "PALABRA:PESO" (peso por defecto 1 si no se indica).
+  return cadena.split(',').map(p => p.trim()).filter(Boolean).map(p => {
+    const idx = p.lastIndexOf(':');
+    if (idx > 0) {
+      const posiblePeso = parseFloat(p.slice(idx + 1));
+      if (!isNaN(posiblePeso)) return { texto: p.slice(0, idx).trim().toUpperCase(), peso: posiblePeso };
+    }
+    return { texto: p.toUpperCase(), peso: 1 };
+  });
+}
+
 function cd3ClasificarDocumento(doc) {
   const texto = `${doc.DESCRIPCION || ''} ${doc.RADICADO || ''}`.toUpperCase();
 
-  let mejorClave = null;
-  let mejorPosicion = Infinity;
-
+  // Puntaje acumulado por dependencia: suma el peso de CADA palabra que
+  // aparece (no solo la primera que se encuentra), y resta una penalización
+  // fija por cada palabra de "excluir" que también aparezca. Gana la
+  // dependencia con mayor puntaje total, no la que aparece más a la izquierda.
+  const puntajes = {};
   for (const [clave, sub] of Object.entries(CD3_SUBDIRECCIONES)) {
-    const palabras = sub.palabras.split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
-    for (const palabra of palabras) {
-      const posicion = cd3BuscarPrimeraOcurrencia(texto, palabra);
-      if (posicion !== -1 && posicion < mejorPosicion) {
-        mejorPosicion = posicion;
-        mejorClave = clave;
+    let puntaje = 0;
+    for (const { texto: palabra, peso } of cd3ParsearPalabras(sub.palabras)) {
+      if (cd3BuscarPrimeraOcurrencia(texto, palabra) !== -1) puntaje += peso;
+    }
+    if (sub.excluir) {
+      for (const { texto: palabraNeg } of cd3ParsearPalabras(sub.excluir)) {
+        if (cd3BuscarPrimeraOcurrencia(texto, palabraNeg) !== -1) puntaje -= 3;
       }
     }
+    if (puntaje > 0) puntajes[clave] = puntaje;
+  }
+
+  const entradas = Object.entries(puntajes).sort((a, b) => b[1] - a[1]);
+  let mejorClave = null, confianza = null;
+  if (entradas.length) {
+    mejorClave = entradas[0][0];
+    const mejor = entradas[0][1];
+    const segundo = entradas.length > 1 ? entradas[1][1] : 0;
+    confianza = (segundo === 0 || mejor >= segundo * 1.5) ? 'alta' : 'baja';
   }
 
   const palabrasPriorizacion = CD3_PALABRAS_PRIORIZACION.split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
   const esPriorizacion = palabrasPriorizacion.some(p => cd3BuscarPrimeraOcurrencia(texto, p) !== -1);
 
-  return { prediccion: mejorClave, esPriorizacion };
+  return { prediccion: mejorClave, esPriorizacion, confianza, puntajes };
 }
 
 async function cd3ObtenerPendientes() {
@@ -907,8 +1138,8 @@ async function cd3EjecutarClasificacion() {
     cd3RenderizarResultados();
   } else {
     CD3_DOCUMENTOS = pendientes.map(doc => {
-      const { prediccion, esPriorizacion } = cd3ClasificarDocumento(doc);
-      return { idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)', prediccion, esPriorizacion, manual: prediccion, estadoEnvio: null, mensajeEstado: '' };
+      const { prediccion, esPriorizacion, confianza } = cd3ClasificarDocumento(doc);
+      return { idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)', prediccion, esPriorizacion, confianza, manual: prediccion, estadoEnvio: null, mensajeEstado: '' };
     });
     estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s).`;
     cd3RenderizarResultados();
@@ -943,6 +1174,7 @@ function cd3RenderizarResultados() {
   if (CD3_FILTRO_ACTUAL === 'con-prediccion') documentosFiltrados = CD3_DOCUMENTOS.filter(d => !!d.manual);
   else if (CD3_FILTRO_ACTUAL === 'sin-prediccion') documentosFiltrados = CD3_DOCUMENTOS.filter(d => !d.manual);
   else if (CD3_FILTRO_ACTUAL === 'priorizacion') documentosFiltrados = CD3_DOCUMENTOS.filter(d => d.esPriorizacion);
+  else if (CD3_FILTRO_ACTUAL === 'baja-confianza') documentosFiltrados = CD3_DOCUMENTOS.filter(d => d.confianza === 'baja');
   else if (CD3_SUBDIRECCIONES[CD3_FILTRO_ACTUAL]) documentosFiltrados = CD3_DOCUMENTOS.filter(d => d.manual === CD3_FILTRO_ACTUAL);
 
   contador.textContent = `(${documentosFiltrados.length} de ${CD3_DOCUMENTOS.length})`;
@@ -968,6 +1200,7 @@ function cd3RenderizarResultados() {
         <select data-idx="${i}" class="cd3-select-sub" style="width:100%; font-size:11px; padding:2px;">
           <option value="">— Sin predicción —</option>${opcionesSelect}
         </select>
+        ${d.confianza === 'baja' ? '<span title="Predicción de baja confianza: revisa manualmente" style="color:#d97706; font-size:11px;">⚠️</span>' : ''}
       </td>
       <td style="padding:5px; text-align:center;" title="Priorizaciones y Control Político">${d.esPriorizacion ? '🏛️' : ''}</td>
       <td style="padding:5px; text-align:center; white-space:nowrap;">
@@ -1029,6 +1262,7 @@ function cd3RenderizarResultados() {
           doc.estadoEnvio = 'error';
           doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó. ' + (r.validacion?.MENSAJE || '');
         }
+        cdBitacoraRegistrar({ accion: 'Reasignación', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: sub.nombre, comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
         console.log(r.movioBandeja ? '✅' : '❌', doc.idc, '→', r.subdireccion, r.resultado, 'validación:', r.validacion);
         if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
       } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; console.log('❌', doc.idc, e.message); }
@@ -1047,6 +1281,7 @@ function cd3RenderizarResultados() {
         const r = await cd2CerrarPorComentario(String(doc.idc), comentario);
         doc.estadoEnvio = r.movioBandeja ? 'ok' : 'error';
         doc.mensajeEstado = r.movioBandeja ? '' : 'El documento sigue en tu bandeja: el cierre no se completó.';
+        cdBitacoraRegistrar({ accion: 'Cierre por comentario', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: '-', comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
         console.log(r.movioBandeja ? '✅' : '❌', doc.idc, 'cierre por comentario:', r.resultado);
         if (r.movioBandeja) cd3ProgramarLimpieza(doc);
       } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; console.log('❌', doc.idc, e.message); }
@@ -1103,6 +1338,7 @@ async function cd3ReasignarTodosLosClasificados() {
         doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
         advertencias++;
       }
+      cdBitacoraRegistrar({ accion: 'Reasignación (masiva)', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: CD3_SUBDIRECCIONES[clave].nombre, comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
       if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
     } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
     cd3RenderizarResultados();
@@ -1161,6 +1397,10 @@ function cd3ToggleSeccion(idCuerpo, idFlecha) {
   flecha.textContent = oculto ? '▾' : '▸';
 }
 
+function cd3TruncarTexto(str, n) {
+  return str.length > n ? str.slice(0, n - 1) + '…' : str;
+}
+
 function cd3CrearPanel() {
   const existente = document.querySelector('#PanelClasificadorDoc');
   if (existente) existente.remove();
@@ -1191,6 +1431,7 @@ function cd3CrearPanel() {
       </div>
     </div>
     <div id="PCD_CuerpoGeneral">
+      <button id="PCD_ExportarBitacora" style="width:100%; margin-bottom:10px; padding:7px; background:#374151; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold;">📥 Exportar registro de acciones <span id="PCD_ContadorBitacora" style="font-weight:normal;">(0)</span></button>
       <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
         <div id="PCD_HeaderSec1" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
           <span><span id="PCD_FlechaSec1">▸</span> ⚙️ Configuración de Palabras Clave</span>
@@ -1217,9 +1458,17 @@ function cd3CrearPanel() {
         </div>
         <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
           <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
-          <input id="PCD_ComentarioReasignacion" type="text" value="${CD2_COMENTARIO_REASIGNACION_DEFAULT}" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+          <select id="PCD_ComentarioReasignacionLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
+            <option value="">— Elegir comentario predefinido —</option>
+            ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c, 70)}</option>`).join('')}
+          </select>
+          <textarea id="PCD_ComentarioReasignacion" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_REASIGNACION_DEFAULT}</textarea>
 
           <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
+          <select id="PCD_ComentarioCierreLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
+            <option value="">— Elegir comentario predefinido —</option>
+            ${CD3_COMENTARIOS_CIERRE.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c, 70)}</option>`).join('')}
+          </select>
           <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
 
           <label style="color:#6b7280; font-size:11px;">Filtrar tabla</label>
@@ -1228,6 +1477,7 @@ function cd3CrearPanel() {
             <option value="con-prediccion">✅ Con predicción</option>
             <option value="sin-prediccion">⚠️ Sin predicción</option>
             <option value="priorizacion">🏛️ Priorizaciones y Control Político</option>
+            <option value="baja-confianza">⚠️ Baja confianza (revisar)</option>
             ${Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `<option value="${clave}">${sub.emoji} Solo: ${sub.nombre}</option>`).join('')}
           </select>
 
@@ -1296,6 +1546,20 @@ function cd3CrearPanel() {
   };
 
   document.querySelector('#PCD_ReasignarManual').onclick = cd3ReasignarManualMultiple;
+
+  document.querySelector('#PCD_ExportarBitacora').onclick = cdBitacoraExportarExcel;
+  document.querySelector('#PCD_ContadorBitacora').textContent = `(${CD_BITACORA.length})`;
+
+  document.querySelector('#PCD_ComentarioReasignacionLista').onchange = (e) => {
+    if (e.target.value === '') return;
+    document.querySelector('#PCD_ComentarioReasignacion').value = CD3_COMENTARIOS_REASIGNACION[Number(e.target.value)];
+    e.target.value = '';
+  };
+  document.querySelector('#PCD_ComentarioCierreLista').onchange = (e) => {
+    if (e.target.value === '') return;
+    document.querySelector('#PCD_ComentarioCierre').value = CD3_COMENTARIOS_CIERRE[Number(e.target.value)];
+    e.target.value = '';
+  };
 }
 
 function cd3HabilitarArrastre(contenedor, agarre) {
