@@ -94,7 +94,7 @@ const CONFIG_DEPENDENCIAS = {
 // ════════════════════════════════════════════════════════════════
 
 const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
-const CD2_COMENTARIO_CIERRE_DEFAULT = 'SE RECIBE LA RESPECTIVA INFORMACIÓN, POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
+const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
 
 const CD3_COMENTARIOS_REASIGNACION = [
   { etiqueta: 'Estándar (Resolución 3687/2016)', texto: CD2_COMENTARIO_REASIGNACION_DEFAULT },
@@ -966,14 +966,16 @@ async function cd2EnviarTramite(registro, listaFuncionarios, comentario) {
 
 // Reasigna un IDC a UNA sola dependencia (usado por el botón 🚀 de cada fila
 // y por "Reasignar clasificados").
-async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
-  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
-  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
-  if (sub.idOficina == null) {
-    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
+// Reasigna a un destino ya resuelto ({ idOficina, idUnidad, nombre }), sin
+// necesidad de que esté en CONFIG_DEPENDENCIAS. La usan tanto
+// cd2ReasignarDocumento (destinos configurados) como el buscador ad-hoc de
+// dependencias (destinos encontrados al vuelo).
+async function cd2ReasignarADestino(idDocumento, destino, comentario) {
+  if (destino.idOficina == null) {
+    throw new Error(`Falta idOficina para "${destino.nombre}".`);
   }
   const registro = await cd2BuscarEnBandeja(idDocumento);
-  const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
+  const jefe = await cd2ObtenerJefe(destino.idOficina, destino.idUnidad);
   const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
 
   const validacion = await cd2ValidarFuncionario(funcionario);
@@ -993,7 +995,16 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
     movioBandeja = true;
   }
 
-  return { idDocumento, radicado: registro.RADICADO, subdireccion: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
+  return { idDocumento, radicado: registro.RADICADO, subdireccion: destino.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
+}
+
+async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario) {
+  const sub = CD2_SUBDIRECCIONES[claveSubdireccion];
+  if (!sub) throw new Error('Subdirección no reconocida: ' + claveSubdireccion);
+  if (sub.idOficina == null) {
+    throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS. Corre cdBuscarOficinaPorNombre('${sub.nombre}') en la consola para encontrarlo.`);
+  }
+  return cd2ReasignarADestino(idDocumento, sub, comentario);
 }
 
 // Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
@@ -1118,6 +1129,7 @@ let CD3_PALABRAS_PRIORIZACION = 'HONORABLE SENADOR, HONORABLE SENADORA, HONORABL
 
 let CD3_DOCUMENTOS = [];
 let CD3_FILTRO_ACTUAL = 'todos';
+let CD3_FILA_SELECCIONADA = null; // idc de la fila resaltada (para no perderse entre documentos)
 
 function cd3EscaparRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1228,12 +1240,14 @@ async function cd3EjecutarClasificacion() {
   if (!pendientes.length) {
     estado.textContent = 'No hay documentos pendientes en este momento.';
     CD3_DOCUMENTOS = [];
+    CD3_FILA_SELECCIONADA = null;
     cd3RenderizarResultados();
   } else {
     CD3_DOCUMENTOS = pendientes.map(doc => {
       const { prediccion, esPriorizacion, confianza } = cd3ClasificarDocumento(doc);
       return { idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)', prediccion, esPriorizacion, confianza, manual: prediccion, estadoEnvio: null, mensajeEstado: '' };
     });
+    CD3_FILA_SELECCIONADA = null;
     estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s).`;
     cd3RenderizarResultados();
   }
@@ -1252,6 +1266,14 @@ function cd3ProgramarLimpieza(doc) {
       cd3RenderizarResultados();
     }
   }, 5000);
+}
+
+function cd3AplicarResaltado() {
+  document.querySelectorAll('#PCD_TablaResultados tr[data-fila-idx]').forEach(tr => {
+    const idx = Number(tr.dataset.filaIdx);
+    if (idx === CD3_FILA_SELECCIONADA) { tr.style.background = '#dbeafe'; tr.style.boxShadow = 'inset 3px 0 0 #2563eb'; }
+    else { tr.style.background = ''; tr.style.boxShadow = ''; }
+  });
 }
 
 function cd3RenderizarResultados() {
@@ -1285,10 +1307,18 @@ function cd3RenderizarResultados() {
       : d.estadoEnvio === 'error' ? '❌'
       : d.estadoEnvio === 'advertencia' ? '⚠️'
       : d.estadoEnvio === 'enviando' ? '⏳' : '';
+    const seleccionada = i === CD3_FILA_SELECCIONADA;
     return `
-    <tr style="border-bottom:1px solid #e5e7eb;">
+    <tr data-fila-idx="${i}" style="border-bottom:1px solid #e5e7eb; cursor:pointer; ${seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : ''}">
       <td style="padding:5px; font-weight:bold;">${d.idc}</td>
-      <td style="padding:5px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${d.asunto}">${d.asunto}</td>
+      <td style="padding:5px; max-width:120px;">
+        <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${d.asunto}">${d.asunto}</div>
+        <div style="display:flex; flex-wrap:wrap; gap:2px; margin-top:3px;">
+          <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="padding:1px 4px; font-size:9px; background:#e5e7eb; border:none; border-radius:3px; cursor:pointer;">📋 IDC</button>
+          <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="padding:1px 4px; font-size:9px; background:#e5e7eb; border:none; border-radius:3px; cursor:pointer;">📋 Rad</button>
+          <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="padding:1px 4px; font-size:9px; background:#e5e7eb; border:none; border-radius:3px; cursor:pointer;">📋 Asu</button>
+        </div>
+      </td>
       <td style="padding:5px;">
         <select data-idx="${i}" class="cd3-select-sub" style="width:100%; font-size:11px; padding:2px;">
           <option value="">— Sin predicción —</option>${opcionesSelect}
@@ -1315,22 +1345,51 @@ function cd3RenderizarResultados() {
     </table>
   `;
 
+  // Resaltar fila al hacer clic en ella (excepto sobre el <select>, que ya
+  // se resalta solo al cambiar de predicción, para no cerrarle el desplegable
+  // nativo a medio elegir).
+  cont.querySelectorAll('tr[data-fila-idx]').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.tagName === 'SELECT') return;
+      CD3_FILA_SELECCIONADA = Number(tr.dataset.filaIdx);
+      cd3RenderizarResultados();
+    });
+  });
+
   cont.querySelectorAll('.cd3-select-sub').forEach(sel => {
     const idx = Number(sel.dataset.idx);
     sel.value = CD3_DOCUMENTOS[idx].manual || '';
-    sel.onchange = () => { CD3_DOCUMENTOS[idx].manual = sel.value || null; cd3RenderizarResultados(); };
+    sel.onchange = () => { CD3_DOCUMENTOS[idx].manual = sel.value || null; CD3_FILA_SELECCIONADA = idx; cd3RenderizarResultados(); };
+  });
+
+  cont.querySelectorAll('.cd3-btn-copiar').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
+      const campo = btn.dataset.copiar;
+      const valor = campo === 'idc' ? String(doc.idc) : campo === 'radicado' ? String(doc.radicado) : (doc.asunto || '');
+      cdCopiarTexto(valor);
+      const textoOriginal = btn.textContent;
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = textoOriginal; }, 1000);
+    };
   });
 
   cont.querySelectorAll('.cd3-btn-preview').forEach(btn => {
     btn.onclick = () => {
-      const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
+      const idx = Number(btn.dataset.idx);
+      CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
+      const doc = CD3_DOCUMENTOS[idx];
       cdPrevisualizarPdf(doc.idc);
     };
   });
 
   cont.querySelectorAll('.cd3-btn-adjuntos').forEach(btn => {
     btn.onclick = () => {
-      const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
+      const idx = Number(btn.dataset.idx);
+      CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
+      const doc = CD3_DOCUMENTOS[idx];
       cdDescargarAdjuntos(doc.idc);
     };
   });
@@ -1338,6 +1397,7 @@ function cd3RenderizarResultados() {
   cont.querySelectorAll('.cd3-btn-reasignar').forEach(btn => {
     btn.onclick = async () => {
       const idx = Number(btn.dataset.idx);
+      CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
       const doc = CD3_DOCUMENTOS[idx];
       if (!doc.manual) return;
       const sub = CD2_SUBDIRECCIONES[doc.manual];
@@ -1366,6 +1426,7 @@ function cd3RenderizarResultados() {
   cont.querySelectorAll('.cd3-btn-cerrar').forEach(btn => {
     btn.onclick = async () => {
       const idx = Number(btn.dataset.idx);
+      CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
       const doc = CD3_DOCUMENTOS[idx];
       const comentario = document.querySelector('#PCD_ComentarioCierre')?.value.trim() || CD2_COMENTARIO_CIERRE_DEFAULT;
       if (!confirm(`¿Cerrar el IDC ${doc.idc} por comentario (comunicación informativa)?\n\nComentario: "${comentario}"`)) return;
@@ -1494,6 +1555,104 @@ function cd3TruncarTexto(str, n) {
   return str.length > n ? str.slice(0, n - 1) + '…' : str;
 }
 
+// ════════════════════════════════════════════════════════════════
+// ═══ BUSCADOR AD-HOC DE DEPENDENCIAS / FUNCIONARIOS ═══
+// Para reasignar hacia oficinas que NO están en CONFIG_DEPENDENCIAS —
+// PQRSDF que salen de la competencia de la Dirección y sus subdirecciones.
+// ════════════════════════════════════════════════════════════════
+
+let CD3_RESULTADOS_OFICINA = [];   // últimas oficinas encontradas
+
+async function cd3BuscarOficinaUI() {
+  const texto = document.querySelector('#PCD_BuscarOficinaTexto').value.trim();
+  const cont = document.querySelector('#PCD_ResultadosOficina');
+  if (!texto) return alert('Escribe al menos una palabra del nombre de la dependencia/oficina.');
+  cont.innerHTML = '<div style="color:#6b7280; font-size:11px;">⏳ Buscando...</div>';
+  try {
+    CD3_RESULTADOS_OFICINA = await cdBuscarOficinaPorNombre(texto);
+  } catch (e) {
+    cont.innerHTML = `<div style="color:#ea580c; font-size:11px;">❌ ${e.message}</div>`;
+    return;
+  }
+  if (!CD3_RESULTADOS_OFICINA.length) {
+    cont.innerHTML = '<div style="color:#9ca3af; font-size:11px;">Sin coincidencias.</div>';
+    return;
+  }
+  cont.innerHTML = CD3_RESULTADOS_OFICINA.map((o, i) => `
+    <div style="border:1px solid #e5e7eb; border-radius:6px; padding:6px 8px; margin-bottom:6px; font-size:11px;">
+      <div style="font-weight:bold;">${cdEscaparHtml(o.NOMBRE)}</div>
+      <div style="color:#6b7280;">IDOFICINA: ${o.IDOFICINAPRODUCTORA} — IDUNIDAD: ${o.IDUNIDADADMINISTRATIVA}</div>
+      <div id="PCD_JefeOficina_${i}" style="color:#1e3a8a; font-weight:bold; margin-top:2px;"></div>
+      <div style="display:flex; gap:4px; margin-top:5px;">
+        <button data-idx="${i}" class="cd3-btn-ver-jefe" style="padding:3px 6px; font-size:10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">👤 Ver jefe</button>
+        <button data-idx="${i}" class="cd3-btn-usar-destino" style="padding:3px 6px; font-size:10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer;">📥 Usar para reasignar</button>
+      </div>
+    </div>
+  `).join('');
+
+  cont.querySelectorAll('.cd3-btn-ver-jefe').forEach(btn => {
+    btn.onclick = async () => {
+      const i = Number(btn.dataset.idx);
+      const o = CD3_RESULTADOS_OFICINA[i];
+      const destino = document.querySelector(`#PCD_JefeOficina_${i}`);
+      destino.textContent = '⏳ Consultando...';
+      try {
+        const jefe = await cd2ObtenerJefe(o.IDOFICINAPRODUCTORA, o.IDUNIDADADMINISTRATIVA);
+        destino.textContent = `Jefe: ${jefe.NOMBRESAPELLIDOS}`;
+      } catch (e) {
+        destino.textContent = `❌ ${e.message}`;
+      }
+    };
+  });
+
+  cont.querySelectorAll('.cd3-btn-usar-destino').forEach(btn => {
+    btn.onclick = () => {
+      const i = Number(btn.dataset.idx);
+      const o = CD3_RESULTADOS_OFICINA[i];
+      document.querySelector('#PCD_DestinoAdHocNombre').value = o.NOMBRE;
+      document.querySelector('#PCD_DestinoAdHocOficina').value = o.IDOFICINAPRODUCTORA;
+      document.querySelector('#PCD_DestinoAdHocUnidad').value = o.IDUNIDADADMINISTRATIVA;
+    };
+  });
+}
+
+// Reasigna uno o varios IDCs al destino ad-hoc que se dejó cargado en los
+// campos de "Usar para reasignar" (llenados por el buscador de oficinas).
+async function cd3ReasignarAdHoc() {
+  const nombre = document.querySelector('#PCD_DestinoAdHocNombre').value.trim();
+  const idOficina = document.querySelector('#PCD_DestinoAdHocOficina').value.trim();
+  const idUnidad = document.querySelector('#PCD_DestinoAdHocUnidad').value.trim();
+  const idsRaw = document.querySelector('#PCD_DestinoAdHocIds').value.trim();
+  const estado = document.querySelector('#PCD_EstadoAdHoc');
+  const btn = document.querySelector('#PCD_ReasignarAdHoc');
+
+  if (!nombre || !idOficina) return alert('Primero busca una dependencia arriba y pulsa "📥 Usar para reasignar".');
+  if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado.');
+  const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a "${nombre}" (fuera de tu lista configurada)?\n\nDocumentos: ${lista.join(', ')}`)) return;
+
+  const destino = { idOficina: Number(idOficina), idUnidad: idUnidad ? Number(idUnidad) : undefined, nombre };
+  const textoOriginal = btn.textContent;
+  btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'not-allowed';
+  estado.textContent = `⏳ Procesando 0/${lista.length}...`;
+
+  let exitosos = 0, fallidos = 0;
+  await ejecutarConPool(lista, CONCURRENCIA_MAXIMA, async (idRaw) => {
+    const id = idRaw.trim();
+    try {
+      const r = await cd2ReasignarADestino(id, destino, comentario);
+      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, destino: nombre, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      if (r.movioBandeja) exitosos++; else fallidos++;
+      console.log(r.movioBandeja ? '✅' : '❌', id, '→', nombre, r.resultado);
+    } catch (e) { fallidos++; console.log('❌', id, e.message); }
+  }, (completados, total) => { estado.textContent = `⏳ Procesando ${completados}/${total}...`; });
+
+  btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer'; btn.textContent = textoOriginal;
+  estado.textContent = `✅ ${exitosos} exitosos, ❌ ${fallidos} fallidos. Revisa la consola para detalle.`;
+}
+
 function cd3CrearPanel() {
   const existente = document.querySelector('#PanelClasificadorDoc');
   if (existente) existente.remove();
@@ -1599,6 +1758,28 @@ function cd3CrearPanel() {
           <div id="PCD_EstadoManual" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
         </div>
       </div>
+
+      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-top:10px; overflow:hidden;">
+        <div id="PCD_HeaderSec5" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
+          <span><span id="PCD_FlechaSec5">▸</span> 🔎 Buscar dependencia / funcionario (fuera de tu lista)</span>
+        </div>
+        <div id="PCD_CuerpoSec5" style="display:none; padding:10px;">
+          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Buscar dependencia, dirección, subdirección u oficina por nombre</label>
+          <div style="display:flex; gap:6px; margin:4px 0 8px;">
+            <input id="PCD_BuscarOficinaTexto" type="text" placeholder="ej: SALUD MENTAL, FINANCIAMIENTO..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <button id="PCD_BuscarOficinaBtn" style="padding:5px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
+          </div>
+          <div id="PCD_ResultadosOficina" style="max-height:180px; overflow-y:auto; margin-bottom:10px;"></div>
+
+          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Reasignar al destino elegido arriba (📥 Usar para reasignar)</label>
+          <input id="PCD_DestinoAdHocNombre" type="text" readonly placeholder="(ningún destino elegido aún)" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; background:#f9fafb; box-sizing:border-box;">
+          <input id="PCD_DestinoAdHocOficina" type="hidden">
+          <input id="PCD_DestinoAdHocUnidad" type="hidden">
+          <textarea id="PCD_DestinoAdHocIds" rows="3" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 8px; box-sizing:border-box;" placeholder="IDCs o Radicados a enviar a ese destino"></textarea>
+          <button id="PCD_ReasignarAdHoc" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar al destino de arriba</button>
+          <div id="PCD_EstadoAdHoc" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
+        </div>
+      </div>
     </div>
   `;
   document.body.appendChild(cont);
@@ -1622,6 +1803,7 @@ function cd3CrearPanel() {
   document.querySelector('#PCD_HeaderSec2').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec2', '#PCD_FlechaSec2');
   document.querySelector('#PCD_HeaderSec3').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec3', '#PCD_FlechaSec3');
   document.querySelector('#PCD_HeaderSec4').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec4', '#PCD_FlechaSec4');
+  document.querySelector('#PCD_HeaderSec5').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec5', '#PCD_FlechaSec5');
 
   document.querySelector('#PCD_Clasificar').onclick = cd3EjecutarClasificacion;
   document.querySelector('#PCD_ReasignarTodo').onclick = cd3ReasignarTodosLosClasificados;
@@ -1639,6 +1821,10 @@ function cd3CrearPanel() {
   };
 
   document.querySelector('#PCD_ReasignarManual').onclick = cd3ReasignarManualMultiple;
+
+  document.querySelector('#PCD_BuscarOficinaBtn').onclick = cd3BuscarOficinaUI;
+  document.querySelector('#PCD_BuscarOficinaTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarOficinaUI(); });
+  document.querySelector('#PCD_ReasignarAdHoc').onclick = cd3ReasignarAdHoc;
 
   document.querySelector('#PCD_ExportarBitacora').onclick = cdBitacoraExportarExcel;
   document.querySelector('#PCD_ContadorBitacora').textContent = `(${CD_BITACORA.length})`;
