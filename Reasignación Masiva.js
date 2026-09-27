@@ -85,6 +85,33 @@ const CONFIG_DEPENDENCIAS = {
 // aparecen en el documento, le restan puntos a esa dependencia (para
 // contrarrestar falsos positivos de una palabra genérica de su lista).
 
+// ════════════════════════════════════════════════════════════════
+// ═══ COMENTARIOS PREDEFINIDOS (tabla editable) ═══
+// El primero de cada lista es el que aparece por defecto ya escrito en el
+// textbox al abrir el panel. Para agregar uno nuevo, copia una fila y
+// cambia "etiqueta" (lo que se ve en el desplegable, corto) y "texto" (lo
+// que se copia al cuadro, puede ser tan largo como quieras).
+// ════════════════════════════════════════════════════════════════
+
+const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
+const CD2_COMENTARIO_CIERRE_DEFAULT = 'SE RECIBE LA RESPECTIVA INFORMACIÓN, POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
+
+const CD3_COMENTARIOS_REASIGNACION = [
+  { etiqueta: 'Estándar (Resolución 3687/2016)', texto: CD2_COMENTARIO_REASIGNACION_DEFAULT },
+  { etiqueta: 'Remisión para trámite y respuesta de fondo', texto: 'SE REMITE PARA TRÁMITE Y RESPUESTA DE FONDO POR COMPETENCIA, DENTRO DE LOS TÉRMINOS DE LEY.' },
+  { etiqueta: 'Revisión conjunta con área técnica', texto: 'SE ASIGNA PARA REVISIÓN Y RESPUESTA CONJUNTA CON EL ÁREA TÉCNICA CORRESPONDIENTE.' },
+  // ── Agrega aquí tus propios comentarios de reasignación ──
+  // { etiqueta: 'Tu etiqueta corta', texto: 'TU TEXTO COMPLETO AQUÍ' },
+];
+
+const CD3_COMENTARIOS_CIERRE = [
+  { etiqueta: 'Estándar (cierre por comentario)', texto: CD2_COMENTARIO_CIERRE_DEFAULT },
+  { etiqueta: 'Respuesta de fondo entregada', texto: ' --- SE DA RESPUESTA DE FONDO AL PETICIONARIO Y SE CIERRA LA PRESENTE COMUNICACIÓN.' },
+  { etiqueta: 'Cierre por duplicidad', texto: ' --- EL REQUERIMIENTO YA FUE ATENDIDO POR OTRA DEPENDENCIA, SE CIERRA POR DUPLICIDAD.' },
+  // ── Agrega aquí tus propios comentarios de cierre ──
+  // { etiqueta: 'Tu etiqueta corta', texto: 'TU TEXTO COMPLETO AQUÍ' },
+];
+
 // Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
 // masivos ("Reasignar clasificados" y "Reasignación Manual"). Pediste 5 en
 // simultáneo: sube o baja este número aquí si más adelante quieres ajustarlo.
@@ -263,6 +290,8 @@ function cdRegistrarHistorial(entrada) {
   if (CD_HISTORIAL.length > CD_HISTORIAL_MAX) CD_HISTORIAL.length = CD_HISTORIAL_MAX;
 }
 
+let CD_HISTORIAL_ORDEN_DESC = true; // true = más reciente primero (por defecto)
+
 function cdRenderizarHistorial() {
   const cont = document.querySelector('#PSD_HistorialLista');
   if (!cont) return;
@@ -270,17 +299,66 @@ function cdRenderizarHistorial() {
     cont.innerHTML = '<div style="color:#9ca3af; font-size:11px; padding:6px 0;">Aún no has buscado ningún documento en esta sesión.</div>';
     return;
   }
-  cont.innerHTML = CD_HISTORIAL.map((e, i) => `
-    <div class="psd-historial-item" data-idx="${i}" style="padding:6px 8px; border-bottom:1px solid #f3f4f6; cursor:pointer; font-size:11px;">
-      <b>#${i + 1} — IDC ${e.idc}</b><br>
+  // El arreglo siempre guarda el más reciente en el índice 0; el orden solo
+  // decide en qué secuencia se pintan (no reordena CD_HISTORIAL en sí).
+  const indices = CD_HISTORIAL.map((_, i) => i);
+  if (!CD_HISTORIAL_ORDEN_DESC) indices.reverse();
+
+  cont.innerHTML = indices.map((idxReal, posicion) => {
+    const e = CD_HISTORIAL[idxReal];
+    return `
+    <div class="psd-historial-item" data-idx="${idxReal}" style="padding:6px 8px; border-bottom:1px solid #f3f4f6; cursor:pointer; font-size:11px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px;">
+        <b>#${posicion + 1} — IDC ${e.idc} — Radicado ${e.radicado}</b>
+      </div>
       <span style="color:#6b7280;">${cdEscaparHtml((e.detalle || '(sin asunto)')).slice(0, 80)}</span>
+      <div style="margin-top:4px; display:flex; gap:4px;">
+        <button class="psd-copiar" data-copiar="idc" data-idx="${idxReal}" style="padding:2px 6px; font-size:10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDC</button>
+        <button class="psd-copiar" data-copiar="radicado" data-idx="${idxReal}" style="padding:2px 6px; font-size:10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Radicado</button>
+        <button class="psd-copiar" data-copiar="asunto" data-idx="${idxReal}" style="padding:2px 6px; font-size:10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Asunto</button>
+      </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
+
   cont.querySelectorAll('.psd-historial-item').forEach(el => {
     el.onclick = () => cdCargarDesdeHistorial(Number(el.dataset.idx));
     el.onmouseenter = () => el.style.background = '#f3f4f6';
     el.onmouseleave = () => el.style.background = '';
   });
+
+  cont.querySelectorAll('.psd-copiar').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => e.stopPropagation()); // no dispara la carga del item
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const entrada = CD_HISTORIAL[Number(btn.dataset.idx)];
+      const campo = btn.dataset.copiar;
+      const valor = campo === 'idc' ? String(entrada.idc) : campo === 'radicado' ? String(entrada.radicado) : (entrada.detalle || '');
+      cdCopiarTexto(valor);
+      const textoOriginal = btn.textContent;
+      btn.textContent = '✓ Copiado';
+      setTimeout(() => { btn.textContent = textoOriginal; }, 1200);
+    };
+  });
+}
+
+function cdCopiarTexto(texto) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(texto).catch(() => cdCopiarTextoFallback(texto));
+  } else {
+    cdCopiarTextoFallback(texto);
+  }
+}
+
+function cdCopiarTextoFallback(texto) {
+  const area = document.createElement('textarea');
+  area.value = texto;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try { document.execCommand('copy'); } catch (e) { /* silencioso */ }
+  area.remove();
 }
 
 function cdEscaparHtml(str) {
@@ -530,7 +608,10 @@ function cdCrearPanel() {
         <div id="PSD_HeaderHistorial" style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#f9fafb; cursor:pointer; font-size:12px; font-weight:bold;">
           <span><span id="PSD_FlechaHistorial">▸</span> 🕘 Historial de búsquedas</span>
         </div>
-        <div id="PSD_CuerpoHistorial" style="display:none; max-height:160px; overflow-y:auto;">
+        <div id="PSD_CuerpoHistorial" style="display:none; max-height:200px; overflow-y:auto;">
+          <div style="display:flex; justify-content:flex-end; padding:4px 8px; border-bottom:1px solid #f3f4f6;">
+            <button id="PSD_OrdenHistorial" style="padding:2px 6px; font-size:10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🔽 Más reciente primero</button>
+          </div>
           <div id="PSD_HistorialLista"></div>
         </div>
       </div>
@@ -543,6 +624,13 @@ function cdCrearPanel() {
   document.querySelector('#PSD_Cerrar').addEventListener('mousedown', (e) => e.stopPropagation());
 
   document.querySelector('#PSD_HeaderHistorial').onclick = () => cd3ToggleSeccion('#PSD_CuerpoHistorial', '#PSD_FlechaHistorial');
+  const btnOrden = document.querySelector('#PSD_OrdenHistorial');
+  btnOrden.addEventListener('mousedown', (e) => e.stopPropagation());
+  btnOrden.onclick = () => {
+    CD_HISTORIAL_ORDEN_DESC = !CD_HISTORIAL_ORDEN_DESC;
+    btnOrden.textContent = CD_HISTORIAL_ORDEN_DESC ? '🔽 Más reciente primero' : '🔼 Más antiguo primero';
+    cdRenderizarHistorial();
+  };
   cdRenderizarHistorial();
 
   let minimizado = false;
@@ -717,22 +805,6 @@ const CD2_CONFIG = {
 };
 
 const CD2_IDACCION_GESTION_EXITOSA = 4;
-const CD2_COMENTARIO_CIERRE_DEFAULT = ' --- POR LO QUE SE PROCEDE A ARCHIVAR Y CERRAR LA PRESENTE COMUNICACIÓN POR COMENTARIO.';
-const CD2_COMENTARIO_REASIGNACION_DEFAULT = 'SE ASIGNA LA PRESENTE YA QUE SE CONSIDERA DE SU COMPETENCIA, EN CASO DE NO SER ASÍ, POR FAVOR DAR TRASLADO INMEDIATO AL ÁREA CORRESPONDIENTE, EN APLICACIÓN DE LA RESOLUCIÓN NO 3687 DE 2016 Y CIRCULAR 18 DE 2020';
-
-// Comentarios predefinidos que aparecen en el desplegable de cada textbox del
-// panel de resultados. Al elegir uno se copia al cuadro de texto (que sigue
-// siendo 100% editable después). Agrega, quita o edita libremente aquí.
-const CD3_COMENTARIOS_REASIGNACION = [
-  CD2_COMENTARIO_REASIGNACION_DEFAULT,
-  'SE REMITE PARA TRÁMITE Y RESPUESTA DE FONDO POR COMPETENCIA, DENTRO DE LOS TÉRMINOS DE LEY.',
-  'SE ASIGNA PARA REVISIÓN Y RESPUESTA CONJUNTA CON EL ÁREA TÉCNICA CORRESPONDIENTE.',
-];
-const CD3_COMENTARIOS_CIERRE = [
-  CD2_COMENTARIO_CIERRE_DEFAULT,
-  ' --- SE DA RESPUESTA DE FONDO AL PETICIONARIO Y SE CIERRA LA PRESENTE COMUNICACIÓN.',
-  ' --- EL REQUERIMIENTO YA FUE ATENDIDO POR OTRA DEPENDENCIA, SE CIERRA POR DUPLICIDAD.',
-];
 
 const CD2_SUBDIRECCIONES = CONFIG_DEPENDENCIAS;
 const CD2_IDUNIDAD = 2;
@@ -741,14 +813,33 @@ const CD2_IDUNIDAD = 2;
 // desde el panel, para exportarla luego a un archivo tipo Excel.
 const CD_BITACORA = [];
 
-function cdBitacoraRegistrar({ accion, idc, radicado, asunto, destino, comentario, resultado, detalleResultado }) {
-  CD_BITACORA.push({
+function cdBitacoraRegistrar({ accion, idc, radicado, asunto, destino, funcionario, comentario, resultado, detalleResultado }) {
+  const entrada = {
     fecha: new Date().toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'medium' }),
-    accion, idc, radicado: radicado || '', asunto: asunto || '', destino: destino || '',
+    accion, idc, radicado: radicado || '', asunto: asunto || '', destino: destino || '', funcionario: funcionario || '',
     comentario: comentario || '', resultado, detalleResultado: detalleResultado || '',
-  });
+    firmante: '', fechaRadicacion: '', tipologia: '', serieSubserie: '',
+  };
+  CD_BITACORA.push(entrada);
   const el = document.querySelector('#PCD_ContadorBitacora');
   if (el) el.textContent = `(${CD_BITACORA.length})`;
+  cdBitacoraEnriquecerConFicha(entrada, idc);
+}
+
+// Completa en segundo plano los datos de la ficha (Firmante, Fecha
+// Radicación, Tipología, Serie/Subserie) reutilizando el mismo endpoint que
+// usa el panel de Seguimiento — no bloquea el registro inmediato de la
+// bitácora, solo la va enriqueciendo apenas responde ControlDoc.
+async function cdBitacoraEnriquecerConFicha(entrada, idc) {
+  try {
+    const ficha = await cdObtenerFicha(idc);
+    entrada.firmante = ficha['FIRMANTE'] || '';
+    entrada.fechaRadicacion = ficha['FECHA RADICACIÓN'] || '';
+    entrada.tipologia = ficha['TIPOLOGÍA DOCUMENTAL'] || '';
+    entrada.serieSubserie = `${ficha['SERIE'] || ''} / ${ficha['SUBSERIE'] || ''}`.trim();
+  } catch (e) {
+    // Si falla, la fila queda con esos campos vacíos — no interrumpe nada más.
+  }
 }
 
 function cdBitacoraExportarExcel() {
@@ -759,10 +850,12 @@ function cdBitacoraExportarExcel() {
       <td>${escapar(e.fecha)}</td><td>${escapar(e.accion)}</td><td>${escapar(e.idc)}</td><td>${escapar(e.radicado)}</td>
       <td>${escapar(e.asunto)}</td><td>${escapar(e.destino)}</td>
       <td>${escapar(e.comentario)}</td><td>${escapar(e.resultado)}</td><td>${escapar(e.detalleResultado)}</td>
+      <td>${escapar(e.funcionario)}</td>
+      <td>${escapar(e.firmante)}</td><td>${escapar(e.fechaRadicacion)}</td><td>${escapar(e.tipologia)}</td><td>${escapar(e.serieSubserie)}</td>
     </tr>`).join('');
   const html = `<html><head><meta charset="UTF-8"></head><body>
     <table border="1">
-      <tr><th>Fecha</th><th>Acción</th><th>IDC</th><th>Radicado</th><th>Asunto</th><th>Destino</th><th>Comentario</th><th>Resultado</th><th>Detalle</th></tr>
+      <tr><th>Fecha</th><th>Acción</th><th>IDC</th><th>Radicado</th><th>Asunto</th><th>Destino</th><th>Comentario</th><th>Resultado</th><th>Detalle</th><th>Funcionario</th><th>Firmante</th><th>Fecha Radicación</th><th>Tipología</th><th>Serie/Subserie</th></tr>
       ${filas}
     </table>
   </body></html>`;
@@ -957,7 +1050,7 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgr
     try {
       const r = await cd2ReasignarDocumento(id, claveSubdireccion, comentario);
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', r.subdireccion, '(', r.jefe, ')', r.resultado, 'validación:', r.validacion);
-      cdBitacoraRegistrar({ accion: 'Reasignación (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.subdireccion, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cdBitacoraRegistrar({ accion: 'Reasignación (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.subdireccion, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -973,7 +1066,7 @@ async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentar
       const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
       const destinoTexto = r.destinos.map(d => `${d.nombre} (${d.jefe})`).join(' + ');
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', destinoTexto, r.resultado);
-      cdBitacoraRegistrar({ accion: 'Reasignación multi-destino (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.destinos.map(d => d.nombre).join(' + '), comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cdBitacoraRegistrar({ accion: 'Reasignación multi-destino (lote manual)', idc: r.idDocumento, radicado: r.radicado, destino: r.destinos.map(d => d.nombre).join(' + '), funcionario: r.destinos.map(d => d.jefe).join(' + '), comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
       if (r.movioBandeja) resultados.exitosos.push(id); else resultados.fallidos.push({ id, error: r.resultado });
     } catch (e) { console.log('❌', id, e.message); resultados.fallidos.push({ id, error: e.message }); }
   }, onProgreso);
@@ -1262,7 +1355,7 @@ function cd3RenderizarResultados() {
           doc.estadoEnvio = 'error';
           doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó. ' + (r.validacion?.MENSAJE || '');
         }
-        cdBitacoraRegistrar({ accion: 'Reasignación', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: sub.nombre, comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
+        cdBitacoraRegistrar({ accion: 'Reasignación', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: sub.nombre, funcionario: r.jefe, comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
         console.log(r.movioBandeja ? '✅' : '❌', doc.idc, '→', r.subdireccion, r.resultado, 'validación:', r.validacion);
         if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
       } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; console.log('❌', doc.idc, e.message); }
@@ -1338,7 +1431,7 @@ async function cd3ReasignarTodosLosClasificados() {
         doc.mensajeEstado = 'El documento sigue en tu bandeja: el trámite no se completó.';
         advertencias++;
       }
-      cdBitacoraRegistrar({ accion: 'Reasignación (masiva)', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: CD3_SUBDIRECCIONES[clave].nombre, comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
+      cdBitacoraRegistrar({ accion: 'Reasignación (masiva)', idc: doc.idc, radicado: doc.radicado, asunto: doc.asunto, destino: CD3_SUBDIRECCIONES[clave].nombre, funcionario: r.jefe, comentario, resultado: doc.estadoEnvio === 'ok' ? 'OK' : 'ERROR', detalleResultado: doc.mensajeEstado });
       if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
     } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
     cd3RenderizarResultados();
@@ -1460,14 +1553,14 @@ function cd3CrearPanel() {
           <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
           <select id="PCD_ComentarioReasignacionLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
             <option value="">— Elegir comentario predefinido —</option>
-            ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c, 70)}</option>`).join('')}
+            ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
           </select>
           <textarea id="PCD_ComentarioReasignacion" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_REASIGNACION_DEFAULT}</textarea>
 
           <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
           <select id="PCD_ComentarioCierreLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
             <option value="">— Elegir comentario predefinido —</option>
-            ${CD3_COMENTARIOS_CIERRE.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c, 70)}</option>`).join('')}
+            ${CD3_COMENTARIOS_CIERRE.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
           </select>
           <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
 
@@ -1552,12 +1645,12 @@ function cd3CrearPanel() {
 
   document.querySelector('#PCD_ComentarioReasignacionLista').onchange = (e) => {
     if (e.target.value === '') return;
-    document.querySelector('#PCD_ComentarioReasignacion').value = CD3_COMENTARIOS_REASIGNACION[Number(e.target.value)];
+    document.querySelector('#PCD_ComentarioReasignacion').value = CD3_COMENTARIOS_REASIGNACION[Number(e.target.value)].texto;
     e.target.value = '';
   };
   document.querySelector('#PCD_ComentarioCierreLista').onchange = (e) => {
     if (e.target.value === '') return;
-    document.querySelector('#PCD_ComentarioCierre').value = CD3_COMENTARIOS_CIERRE[Number(e.target.value)];
+    document.querySelector('#PCD_ComentarioCierre').value = CD3_COMENTARIOS_CIERRE[Number(e.target.value)].texto;
     e.target.value = '';
   };
 }
