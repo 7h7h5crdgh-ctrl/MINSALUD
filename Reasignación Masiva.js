@@ -113,6 +113,41 @@ const CD3_COMENTARIOS_CIERRE = [
   // { etiqueta: 'Tu etiqueta corta', texto: 'TU TEXTO COMPLETO AQUÍ' },
 ];
 
+// ════════════════════════════════════════════════════════════════
+// ═══ BANDEJAS DE OTROS FUNCIONARIOS (solo lectura) ═══
+// Equivale a la opción nativa "Gestión Trámites → Ver Bandeja de Gestión por
+// Funcionario". Aquí se define en qué oficina se buscan los funcionarios y
+// qué cargos se ofrecen. Los IDs salen de las peticiones reales de ControlDoc.
+// ════════════════════════════════════════════════════════════════
+const CD3_BANDEJA_UNIDAD = 2;    // IDUNIDADADMINISTRATIVA (Despacho del Viceministro de Salud Pública y Atención Primaria)
+const CD3_BANDEJA_OFICINA = 36;  // IDOFICINAPRODUCTORA (Dirección de Determinantes Sociales, Promoción y Prevención)
+const CD3_BANDEJA_CARGOS = { 'GESTOR': 4, 'JEFE': 2 };  // nombre visible → IDCARGO (agrega otros cuando confirmes su ID)
+
+// ════════════════════════════════════════════════════════════════
+// ═══ BANDEJA DE TAREAS DOCUMENTALES (solo lectura) ═══
+// Las listas del "Tablero de Control – Bandeja de Tareas Documentales"
+// (Doc Creados, Por Revisar, Por Aprobar, Involucrado). Todas salen de
+// TareasDoc/CargarBandeja; cambian los parámetros "Bandeja.*".
+// ════════════════════════════════════════════════════════════════
+
+// Por defecto se usa la cuenta de la SESIÓN ABIERTA (el script la detecta solo).
+// Aquí puedes dejar atajos opcionales a otras cuentas que consultes seguido
+// (nombre visible + ID de funcionario; el ID lo ves con el buscador).
+// Ejemplo:  { nombre: 'Nombre visible', idFuncionario: 12345 },
+const CD4_CUENTAS = [];
+
+// Parámetros propios de cada lista. "{ID}" se reemplaza por el ID de la cuenta
+// elegida. "parametros: null" = lista aún sin configurar (se completa con la
+// captura de red de esa tarjeta: copia los parámetros de su CargarBandeja).
+// "indicadorSalida: true" muestra ✅ (tiene IDC: el documento ya salió) o ❌
+// (sin IDC: todavía no ha salido) en cada tarea de esa lista.
+const CD4_LISTAS = {
+  creados:     { etiqueta: '📝 Doc Creados',     indicadorSalida: true, parametros: { 'Bandeja.ACCIONES': 'PROYECTAR', 'Bandeja.IDFUNCIONARIOCREO': '{ID}' } },
+  revisar:     { etiqueta: '🔎 Por Revisar',     parametros: null },
+  aprobar:     { etiqueta: '✍️ Por Aprobar',     parametros: null },
+  involucrado: { etiqueta: '👥 Involucrado',     parametros: null },
+};
+
 // Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
 // masivos ("Reasignar clasificados" y "Reasignación Manual"). Pediste 5 en
 // simultáneo: sube o baja este número aquí si más adelante quieres ajustarlo.
@@ -1162,6 +1197,13 @@ let CD3_DOCUMENTOS = [];
 let CD3_FILTRO_ACTUAL = 'todos';
 let CD3_FILA_SELECCIONADA = null; // idc de la fila resaltada (para no perderse entre documentos)
 
+// Bandeja a cargar: idFuncionario 0 = la tuya. "Seleccionada" es lo que elegiste
+// en el desplegable; "cargada" es la que realmente está en la tabla ahora (de
+// ella depende el modo solo lectura).
+let CD3_BANDEJA_SELECCIONADA = { idFuncionario: 0, nombre: null, cargo: '', oficina: '' };
+let CD3_BANDEJA_CARGADA = { idFuncionario: 0, nombre: null, oficina: '' };
+let CD3_FUNCIONARIOS_BANDEJA = [];
+
 function cd3EscaparRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1227,12 +1269,15 @@ function cd3ClasificarDocumento(doc) {
   return { prediccion: mejorClave, esPriorizacion, confianza, puntajes };
 }
 
-async function cd3ObtenerPendientes() {
+// idFuncionario = 0 → tu propia bandeja. Con el ID de otro funcionario, el
+// servidor devuelve la bandeja de esa persona (así lo hace la opción nativa
+// "Ver Bandeja de Gestión por Funcionario"; se comprobó con una consulta real).
+async function cd3ObtenerPendientes(idFuncionario = 0) {
   const params = {
     sort: '', group: '', filter: '', ESTADOFLUJO: 'SIN INICIAR TRAMITE', TRAMITADO: 'NO',
     ANIO: '', MES: '', DIA: '', IDTIPOLOGIADOCUMENTAL: 0, PRIORIDAD: '', IDCLASE: 0,
     IDCONTROL: 0, RADICADO: '', TIPOPROCESO: '', IDMODALIDADCONTRATACION: 0,
-    IDREGIONAL: 0, IDCENTRO: 0, NUMPROCESO: '', CHCKFECHVENC: 'false', IDFUNCIONARIO_VBG: 0,
+    IDREGIONAL: 0, IDCENTRO: 0, NUMPROCESO: '', CHCKFECHVENC: 'false', IDFUNCIONARIO_VBG: idFuncionario,
     DESCRIPCION: '', ASUNTO: '', FILTROPQR: 'NO',
   };
   const body = new URLSearchParams(params);
@@ -1248,6 +1293,9 @@ async function cd3ObtenerPendientes() {
 async function cd3EjecutarClasificacion() {
   const btn = document.querySelector('#PCD_Clasificar');
   const estado = document.querySelector('#PCD_Estado');
+  const bandeja = { ...CD3_BANDEJA_SELECCIONADA };
+  const deOtro = bandeja.idFuncionario !== 0;
+  const sufijoBandeja = deOtro ? ` de la bandeja de ${bandeja.nombre}` : '';
 
   const textoOriginal = btn.textContent;
   btn.disabled = true;
@@ -1258,7 +1306,7 @@ async function cd3EjecutarClasificacion() {
 
   let pendientes;
   try {
-    pendientes = await cd3ObtenerPendientes();
+    pendientes = await cd3ObtenerPendientes(bandeja.idFuncionario);
   } catch (e) {
     estado.textContent = '❌ Error al consultar la bandeja: ' + e.message;
     btn.disabled = false;
@@ -1268,8 +1316,12 @@ async function cd3EjecutarClasificacion() {
     return;
   }
 
+  // Desde aquí la tabla corresponde a esta bandeja (de ello depende el modo solo lectura).
+  CD3_BANDEJA_CARGADA = { idFuncionario: bandeja.idFuncionario, nombre: bandeja.nombre, oficina: bandeja.oficina || '' };
+  cd3ActualizarBannerBandeja();
+
   if (!pendientes.length) {
-    estado.textContent = 'No hay documentos pendientes en este momento.';
+    estado.textContent = `No hay documentos pendientes${sufijoBandeja} en este momento.`;
     CD3_DOCUMENTOS = [];
     CD3_FILA_SELECCIONADA = null;
     cd3RenderizarResultados();
@@ -1278,14 +1330,14 @@ async function cd3EjecutarClasificacion() {
       const { prediccion, esPriorizacion, confianza } = cd3ClasificarDocumento(doc);
       return {
         idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)',
-        fechaAsignacion: cdParseAspDate(doc.FECHAASIGNO), fechaRadicacion: null,
+        // Ambas fechas vienen en el mismo registro de la bandeja: no hace falta pedirlas aparte.
+        fechaAsignacion: cdParseAspDate(doc.FECHAASIGNO), fechaRadicacion: cdParseAspDate(doc.FECHARADICO),
         prediccion, esPriorizacion, confianza, manual: prediccion, estadoEnvio: null, mensajeEstado: '',
       };
     });
     CD3_FILA_SELECCIONADA = null;
-    estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s).`;
+    estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s)${sufijoBandeja}.`;
     cd3RenderizarResultados();
-    cd3CargarFechasRadicacionEnSegundoPlano();
   }
 
   btn.disabled = false;
@@ -1294,27 +1346,146 @@ async function cd3EjecutarClasificacion() {
   btn.textContent = textoOriginal;
 }
 
-// Fecha de radicación (mejora adicional): no viene en la bandeja, hay que
-// pedirla con INFORMACIONGENERALDOCUMENTO (la misma llamada del panel de
-// Seguimiento) — se hace en segundo plano, con poca concurrencia para no
-// sobrecargar el servidor con una lista larga, y sin bloquear el resto del
-// panel. Cada casilla arranca en "⏳" y se llena sola cuando responde.
-const CD3_CACHE_FECHA_RADICACION = {};
-const CD3_CONCURRENCIA_FECHAS = 5;
+// ── Selector de bandeja (equivale a "Ver Bandeja de Gestión por Funcionario") ──
 
-async function cd3CargarFechasRadicacionEnSegundoPlano() {
-  const pendientes = CD3_DOCUMENTOS.filter(d => CD3_CACHE_FECHA_RADICACION[d.idc] === undefined);
-  await ejecutarConPool(pendientes, CD3_CONCURRENCIA_FECHAS, async (doc) => {
-    let fecha = '—';
-    try {
-      const ficha = await cdObtenerFicha(doc.idc);
-      fecha = ficha['FECHA RADICACIÓN'] || '—';
-    } catch (e) { /* se deja en "—" si falla */ }
-    CD3_CACHE_FECHA_RADICACION[doc.idc] = fecha;
-    doc.fechaRadicacion = fecha;
-    const span = document.querySelector(`#cd3-fecharad-${doc.idc}`);
-    if (span) span.textContent = fecha;
+// Normaliza para comparar sin importar mayúsculas ni tildes.
+function cd3Normalizar(str) {
+  return String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+}
+
+// De cada funcionario que devuelve ControlDoc (decenas de campos por persona,
+// varios de ellos sensibles) se conservan SOLO los datos necesarios; el resto
+// se descarta de inmediato.
+function cd3ResumirFuncionario(f) {
+  return {
+    idFuncionario: Number(f.IDFUNCIONARIO),
+    nombre: f.NOMBRESAPELLIDOS || `${f.NOMBRES || ''} ${f.APELLIDOS || ''}`.trim(),
+    cargo: f.CARGO || '',
+    oficina: f.OFICINAPRODUCTORA || '',
+  };
+}
+
+async function cd3ConsultarFuncionarios(params) {
+  const resp = await fetch(`${CD2_CONFIG.urlFuncionarios}?${new URLSearchParams(params).toString()}`, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  return resp.json();
+}
+
+// Lista los funcionarios de la oficina configurada (tu Dirección) para un cargo.
+async function cd3ListarFuncionariosBandeja(idCargo) {
+  const data = await cd3ConsultarFuncionarios({
+    IDUNIDADADMINISTRATIVA: CD3_BANDEJA_UNIDAD, IDOFICINAPRODUCTORA: CD3_BANDEJA_OFICINA,
+    IDCARGO: idCargo, NOMBRES: '', APELLIDOS: '',
   });
+  return (data || []).map(cd3ResumirFuncionario).filter(f => f.idFuncionario)
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+}
+
+// Búsqueda global por nombre y/o apellido en TODA la entidad (unidad, oficina y
+// cargo vacíos: comprobado con una consulta real, devuelve funcionarios de
+// todas las dependencias). ControlDoc filtra "nombres" y "apellidos" por
+// separado, así que se consulta la palabra más larga en ambos campos, se unen
+// los resultados y luego se exige (sin tildes) que aparezcan TODAS las palabras
+// escritas; por eso "ricardo cuesta" también funciona.
+async function cd3BuscarFuncionariosGlobal(texto) {
+  const palabras = texto.trim().toUpperCase().split(/\s+/).filter(p => p.length >= 2);
+  if (!palabras.length) return [];
+  const clave = palabras.slice().sort((a, b) => b.length - a.length)[0];
+  const base = { IDUNIDADADMINISTRATIVA: '', IDOFICINAPRODUCTORA: '', IDCARGO: '' };
+  const respuestas = await Promise.allSettled([
+    cd3ConsultarFuncionarios({ ...base, NOMBRES: clave, APELLIDOS: '' }),
+    cd3ConsultarFuncionarios({ ...base, NOMBRES: '', APELLIDOS: clave }),
+  ]);
+  // Si fallaron las dos consultas es un error real, no "cero resultados".
+  if (respuestas.every(r => r.status === 'rejected')) throw respuestas[0].reason;
+
+  const requeridas = palabras.map(cd3Normalizar);
+  const vistos = new Set();
+  return respuestas
+    .flatMap(r => (r.status === 'fulfilled' && Array.isArray(r.value)) ? r.value : [])
+    .map(cd3ResumirFuncionario)
+    .filter(f => f.idFuncionario && !vistos.has(f.idFuncionario) && vistos.add(f.idFuncionario))
+    .filter(f => { const n = cd3Normalizar(f.nombre); return requeridas.every(p => n.includes(p)); })
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+}
+
+function cd3EtiquetaFuncionario(f) {
+  const detalle = [f.cargo, f.oficina ? cd3TruncarTexto(f.oficina, 40) : ''].filter(Boolean).join(' · ');
+  return `${f.nombre}${detalle ? ' — ' + detalle : ''} (ID ${f.idFuncionario})`;
+}
+
+function cd3PintarListaFuncionariosBandeja() {
+  const sel = document.querySelector('#PCD_BandejaFuncionario');
+  if (!sel) return;
+  const filtro = cd3Normalizar((document.querySelector('#PCD_BandejaFiltro').value || '').trim());
+  let lista = CD3_FUNCIONARIOS_BANDEJA.filter(f => !filtro || cd3Normalizar(f.nombre).includes(filtro));
+  // Si ya hay uno elegido y el filtro lo oculta, se conserva en la lista para no perder la selección.
+  const elegido = CD3_BANDEJA_SELECCIONADA;
+  if (elegido.idFuncionario && !lista.some(f => f.idFuncionario === elegido.idFuncionario)) {
+    lista = [{ idFuncionario: elegido.idFuncionario, nombre: elegido.nombre, cargo: elegido.cargo || '', oficina: elegido.oficina || '' }, ...lista];
+  }
+  sel.innerHTML = '<option value="0">👤 Mi bandeja (predeterminado)</option>' +
+    lista.map(f => `<option value="${f.idFuncionario}">${cdEscaparHtml(cd3EtiquetaFuncionario(f))}</option>`).join('');
+  sel.value = String(elegido.idFuncionario);
+}
+
+async function cd3BuscarFuncionariosBandejaUI() {
+  const estado = document.querySelector('#PCD_BandejaEstado');
+  const idCargo = Number(document.querySelector('#PCD_BandejaCargo').value);
+  estado.textContent = '⏳ Buscando funcionarios...';
+  try {
+    CD3_FUNCIONARIOS_BANDEJA = await cd3ListarFuncionariosBandeja(idCargo);
+  } catch (e) {
+    estado.textContent = '❌ No se pudo consultar la lista: ' + e.message;
+    return;
+  }
+  cd3PintarListaFuncionariosBandeja();
+  estado.textContent = `${CD3_FUNCIONARIOS_BANDEJA.length} funcionario(s) de tu Dirección. Elige uno y pulsa "Cargar Documentos Pendientes".`;
+}
+
+async function cd3BuscarFuncionariosGlobalUI() {
+  const estado = document.querySelector('#PCD_BandejaEstado');
+  const texto = document.querySelector('#PCD_BandejaBuscarTexto').value.trim();
+  if (texto.replace(/\s+/g, '').length < 2) { estado.textContent = 'Escribe al menos 2 letras de un nombre o apellido.'; return; }
+  estado.textContent = '⏳ Buscando en toda la entidad...';
+  try {
+    CD3_FUNCIONARIOS_BANDEJA = await cd3BuscarFuncionariosGlobal(texto);
+  } catch (e) {
+    estado.textContent = '❌ No se pudo consultar: ' + e.message;
+    return;
+  }
+  document.querySelector('#PCD_BandejaFiltro').value = '';
+  cd3PintarListaFuncionariosBandeja();
+  const n = CD3_FUNCIONARIOS_BANDEJA.length;
+  estado.textContent = n
+    ? `${n} funcionario(s) en toda la entidad. Si una persona sale dos veces, tiene dos usuarios (dos IDs). Elige uno y pulsa "Cargar Documentos Pendientes".`
+    : 'Sin coincidencias. Prueba con una sola palabra o sin tildes.';
+}
+
+function cd3ElegirBandeja(idFuncionario) {
+  const estado = document.querySelector('#PCD_BandejaEstado');
+  if (!idFuncionario) {
+    CD3_BANDEJA_SELECCIONADA = { idFuncionario: 0, nombre: null, cargo: '', oficina: '' };
+    if (estado) estado.textContent = 'Se cargará tu propia bandeja.';
+  } else {
+    const f = CD3_FUNCIONARIOS_BANDEJA.find(x => x.idFuncionario === idFuncionario)
+      || (CD3_BANDEJA_SELECCIONADA.idFuncionario === idFuncionario ? CD3_BANDEJA_SELECCIONADA : null);
+    if (!f) return;
+    CD3_BANDEJA_SELECCIONADA = { idFuncionario: f.idFuncionario, nombre: f.nombre, cargo: f.cargo, oficina: f.oficina || '' };
+    if (estado) estado.textContent = `Seleccionado: ${f.nombre}${f.oficina ? ' (' + f.oficina + ')' : ''}. Pulsa "Cargar Documentos Pendientes" para ver su bandeja.`;
+  }
+  cd3PintarListaFuncionariosBandeja();
+}
+
+// Aviso visible sobre la tabla cuando lo cargado NO es tu bandeja.
+function cd3ActualizarBannerBandeja() {
+  const el = document.querySelector('#PCD_BannerBandeja');
+  if (!el) return;
+  const c = CD3_BANDEJA_CARGADA;
+  const deOtro = c.idFuncionario !== 0;
+  el.style.display = deOtro ? 'block' : 'none';
+  el.textContent = deOtro
+    ? `👁️ Viendo la bandeja de ${c.nombre}${c.oficina ? ' (' + c.oficina + ')' : ''} — solo lectura (reasignar y cerrar están bloqueados)`
+    : '';
 }
 
 function cd3ProgramarLimpieza(doc) {
@@ -1380,13 +1551,15 @@ function cd3RenderizarResultados() {
       : d.estadoEnvio === 'advertencia' ? '⚠️'
       : d.estadoEnvio === 'enviando' ? '⏳' : '';
     const seleccionada = i === CD3_FILA_SELECCIONADA;
+    const soloLectura = CD3_BANDEJA_CARGADA.idFuncionario !== 0;
+    const tituloBloqueo = 'Solo lectura: estás viendo la bandeja de otro funcionario';
     return `
     <tr data-fila-idx="${i}" style="border-bottom:1px solid #e5e7eb; cursor:pointer; ${seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : ''}">
       <td style="padding:5px; font-weight:bold;">${d.idc}</td>
       <td style="padding:5px; max-width:260px;">
         <div style="white-space:normal; word-break:break-word;">${d.asunto}</div>
         <div style="color:#9ca3af; font-size:10px; margin-top:3px; line-height:1.5;">
-          📅 Radicación: <span id="cd3-fecharad-${d.idc}">${d.fechaRadicacion || '⏳'}</span><br>
+          📅 Radicación: ${d.fechaRadicacion || '—'}<br>
           📤 Asignación (remitido): ${d.fechaAsignacion || '—'}
         </div>
         <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">
@@ -1405,8 +1578,8 @@ function cd3RenderizarResultados() {
       <td style="padding:5px; text-align:center; white-space:nowrap;">
         <button data-idx="${i}" class="cd3-btn-preview" title="Previsualizar PDF" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">👁</button>
         <button data-idx="${i}" class="cd3-btn-adjuntos" title="Descargar Adjuntos" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📎</button>
-        <button data-idx="${i}" class="cd3-btn-reasignar" title="Reasignar" style="padding:3px 5px; background:#111827; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;" ${!d.manual ? 'disabled' : ''}>🚀</button>
-        <button data-idx="${i}" class="cd3-btn-cerrar" title="Cerrar por comentario (comunicación informativa)" style="padding:3px 5px; background:#0d9488; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">🗂️</button>
+        <button data-idx="${i}" class="cd3-btn-reasignar" title="${soloLectura ? tituloBloqueo : 'Reasignar'}" style="padding:3px 5px; background:#111827; color:#fff; border:none; border-radius:4px; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; font-size:11px; ${soloLectura ? 'opacity:0.4;' : ''}" ${(!d.manual || soloLectura) ? 'disabled' : ''}>🚀</button>
+        <button data-idx="${i}" class="cd3-btn-cerrar" title="${soloLectura ? tituloBloqueo : 'Cerrar por comentario (comunicación informativa)'}" style="padding:3px 5px; background:#0d9488; color:#fff; border:none; border-radius:4px; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; font-size:11px; ${soloLectura ? 'opacity:0.4;' : ''}" ${soloLectura ? 'disabled' : ''}>🗂️</button>
         <span style="margin-left:2px;" title="${d.mensajeEstado || ''}">${iconoEstado}</span>
       </td>
     </tr>`;
@@ -1522,6 +1695,9 @@ function cd3RenderizarResultados() {
 
 async function cd3ReasignarTodosLosClasificados() {
   const btn = document.querySelector('#PCD_ReasignarTodo');
+  if (CD3_BANDEJA_CARGADA.idFuncionario !== 0) {
+    return alert(`Estás viendo la bandeja de ${CD3_BANDEJA_CARGADA.nombre} en modo solo lectura: reasignar está bloqueado.\n\nVuelve a cargar tu propia bandeja para reasignar.`);
+  }
 
   let base = CD3_DOCUMENTOS;
   if (CD3_FILTRO_ACTUAL === 'con-prediccion') base = CD3_DOCUMENTOS.filter(d => !!d.manual);
@@ -1730,6 +1906,538 @@ async function cd3ReasignarAdHoc() {
   estado.textContent = `✅ ${exitosos} exitosos, ❌ ${fallidos} fallidos. Revisa la consola para detalle.`;
 }
 
+// ════════════════════════════════════════════════════════════════
+// ═══ BANDEJA DE TAREAS DOCUMENTALES: lógica (solo lectura) ═══
+// ════════════════════════════════════════════════════════════════
+
+const CD4_URL_BANDEJA = 'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/CargarBandeja';
+let CD4_FILAS = [];
+let CD4_CARGADA = null;   // { lista, cuenta, idFuncionario } de lo que hay en la tabla
+let CD4_RESULTADOS_CUENTA = [];
+let CD4_CUENTA_SELECCIONADA = null;   // { idFuncionario, nombre, oficina? }; null = sin elegir
+let CD4_SESION = null;                // cuenta de la sesión abierta, si se pudo detectar
+let CD4_SESION_INTENTADA = false;
+
+// ── Cuenta de la sesión abierta (bandeja predeterminada) ──
+// ControlDoc ya expone datos de la sesión con Home/ObtenerDatoFuncionarioSesion
+// (la página lo usa con key=FIRMA). Se pide la propiedad IDFUNCIONARIO — solo
+// esa: IDUSUARIO NO sirve, porque en ControlDoc es otro número. Si no responde
+// un ID válido, no se inventa nada: queda "sin detectar" y se usa el buscador.
+async function cd4LeerDatoSesion(clave) {
+  const resp = await fetch(`https://controldoc.minsalud.gov.co/Controldoc///Home/ObtenerDatoFuncionarioSesion?key=${encodeURIComponent(clave)}`, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  if (!resp.ok) return null;
+  const texto = (await resp.text()).trim();
+  if (!texto || texto.length > 200 || texto.startsWith('<')) return null;   // vacío, largo o página de error
+  try {
+    const j = JSON.parse(texto);
+    if (j !== null && typeof j === 'object') return j.value ?? j.VALOR ?? j.VALORESPUESTA ?? null;
+    return j;
+  } catch (e) { return texto; }
+}
+
+async function cd4DetectarSesion() {
+  CD4_SESION_INTENTADA = true;
+  try {
+    const bruto = await cd4LeerDatoSesion('IDFUNCIONARIO');
+    const id = Number(bruto);
+    if (!Number.isInteger(id) || id <= 0 || id > 99999999) {
+      console.warn('[CD4] No se pudo detectar la cuenta de la sesión. Respuesta de key=IDFUNCIONARIO:', bruto);
+      CD4_SESION = null;
+      return null;
+    }
+    const texto = (v) => (typeof v === 'string' || typeof v === 'number') ? String(v).trim() : '';
+    const [login, nombre] = await Promise.all([
+      cd4LeerDatoSesion('LOGIN').catch(() => null),
+      cd4LeerDatoSesion('NOMBRESAPELLIDOS').catch(() => null),
+    ]);
+    CD4_SESION = { idFuncionario: id, nombre: texto(nombre) || texto(login) || 'sesión abierta', login: texto(login) };
+    if (!CD4_CUENTA_SELECCIONADA) CD4_CUENTA_SELECCIONADA = CD4_SESION;
+  } catch (e) {
+    console.warn('[CD4] Error al detectar la cuenta de la sesión:', e);
+    CD4_SESION = null;
+  }
+  return CD4_SESION;
+}
+
+function cd4EtiquetaCuenta(c, esSesion) {
+  const oficina = c.oficina ? ' — ' + cd3TruncarTexto(c.oficina, 35) : '';
+  const login = esSesion && c.login ? ` [${c.login}]` : '';
+  return `${esSesion ? '👤 Mi sesión: ' : ''}${c.nombre}${login}${oficina} (ID ${c.idFuncionario})`;
+}
+
+function cd4PintarSelectCuenta() {
+  const sel = document.querySelector('#PCD_TareasCuenta');
+  if (!sel) return;
+  const opciones = [];
+  if (CD4_SESION) opciones.push({ c: CD4_SESION, sesion: true });
+  const yaEsta = (id) => opciones.some(o => o.c.idFuncionario === id);
+  for (const c of [...CD4_CUENTAS, ...CD4_RESULTADOS_CUENTA]) if (!yaEsta(c.idFuncionario)) opciones.push({ c, sesion: false });
+  if (CD4_CUENTA_SELECCIONADA && !yaEsta(CD4_CUENTA_SELECCIONADA.idFuncionario)) opciones.push({ c: CD4_CUENTA_SELECCIONADA, sesion: false });
+
+  const aviso = !CD4_SESION
+    ? `<option value="">${CD4_SESION_INTENTADA ? '— Sesión no detectada: busca una cuenta —' : '⏳ Detectando tu sesión...'}</option>`
+    : '';
+  sel.innerHTML = aviso + opciones.map(o => `<option value="${o.c.idFuncionario}">${cdEscaparHtml(cd4EtiquetaCuenta(o.c, o.sesion))}</option>`).join('');
+  sel.value = CD4_CUENTA_SELECCIONADA ? String(CD4_CUENTA_SELECCIONADA.idFuncionario) : '';
+}
+
+async function cd4PrepararCuentaPorDefecto() {
+  if (CD4_SESION_INTENTADA) return;
+  cd4PintarSelectCuenta();
+  const estado = document.querySelector('#PCD_TareasEstado');
+  await cd4DetectarSesion();
+  cd4PintarSelectCuenta();
+  if (!estado) return;
+  estado.textContent = CD4_SESION
+    ? `Sesión detectada: ${CD4_SESION.nombre} (ID ${CD4_SESION.idFuncionario}). Elige una lista.`
+    : 'No pude detectar la cuenta de la sesión. Búscala por nombre en el campo de arriba.';
+}
+
+async function cd4BuscarCuentaUI() {
+  const estado = document.querySelector('#PCD_TareasEstado');
+  const texto = document.querySelector('#PCD_TareasBuscarTexto').value.trim();
+  if (texto.replace(/\s+/g, '').length < 2) { estado.textContent = 'Escribe al menos 2 letras de un nombre o apellido.'; return; }
+  estado.textContent = '⏳ Buscando en toda la entidad...';
+  try {
+    CD4_RESULTADOS_CUENTA = await cd3BuscarFuncionariosGlobal(texto);
+  } catch (e) {
+    estado.textContent = '❌ No se pudo consultar: ' + e.message;
+    return;
+  }
+  cd4PintarSelectCuenta();
+  estado.textContent = CD4_RESULTADOS_CUENTA.length
+    ? `${CD4_RESULTADOS_CUENTA.length} funcionario(s) encontrados — elígelo arriba y pulsa una lista.`
+    : 'Sin coincidencias. Prueba con una sola palabra o sin tildes.';
+}
+
+function cd4ConstruirUrl(clave, idFuncionario) {
+  const sinFecha = 'Mon Jan 01 1900 00:00:00 GMT-0456 (hora estándar de Colombia)';
+  const ahora = new Date();
+  const d2 = (n) => String(n).padStart(2, '0');
+  const params = new URLSearchParams({
+    'Bandeja.IDTAREAINICIAL': 0, 'Bandeja.ASUNTO': '', 'Bandeja.ESTADOTAREA': '',
+    'Bandeja.IDFUNCIONARIOCREO': 0, 'Bandeja.IDFUNCIONARIOTAREA': 0, 'Bandeja.IDFUNCIONARIOFIRMO': 0,
+    'Bandeja.FECHA1': sinFecha, 'Bandeja.FECHA2': sinFecha, 'Bandeja.ACCIONES': '', 'Bandeja.INSTRUCCION': '',
+    'Bandeja.FECHAHOY': sinFecha, 'Bandeja.PROCESADO': '', 'Bandeja.ESTADO': 'SI',
+    FechaHoy_BTDOC: `${d2(ahora.getDate())}/${d2(ahora.getMonth() + 1)}/${ahora.getFullYear()} ${ahora.getHours()}:${d2(ahora.getMinutes())}:${d2(ahora.getSeconds())}`,
+  });
+  for (const [k, v] of Object.entries(CD4_LISTAS[clave].parametros)) params.set(k, String(v).replace('{ID}', idFuncionario));
+  return `${CD4_URL_BANDEJA}?${params.toString()}`;
+}
+
+function cd4ParsearFecha(v) {
+  if (!v) return null;
+  const m = /\/Date\((-?\d+)\)\//.exec(String(v));
+  const d = m ? new Date(parseInt(m[1], 10)) : new Date(v);
+  return (isNaN(d.getTime()) || d.getFullYear() < 2000) ? null : d;
+}
+
+// Fecha de creación de la tarea, tal como la muestra la columna nativa "FECHA
+// CREACIÓN" ("Tarea documental del 17/09/2026 11:13:44": sale del campo NOMBRE).
+// Si el texto no la trae, se recurre a FECHAGRABO y luego a FECHA.
+function cd4ExtraerCreacion(f) {
+  const m = /(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2}(?::\d{2})?)/.exec(String(f.NOMBRE || ''));
+  if (m) return `${m[1]} ${m[2]}`;
+  const d = cd4ParsearFecha(f.FECHAGRABO) || cd4ParsearFecha(f.FECHA);
+  if (!d) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// De cada fila (unos 97 campos) se conserva solo lo que la tabla muestra.
+function cd4ResumirFila(f) {
+  return {
+    idTarea: f.IDTAREADOC, idc: f.IDDOCUMENTO, conIdc: Number(f.IDDOCUMENTO) > 0,
+    radicado: f.RADICADO || f.RADICADOSENLACE || '',
+    asunto: f.ASUNTO || '', nombre: f.NOMBRE || '', creacion: cd4ExtraerCreacion(f), clase: f.CLASE || '',
+    de: f.FUNCIONARIOCREO || '',
+    para: f.NOMBRESFUNCIONARIOTAREA || f.FUNCIONARIOTAREA || f.DESTINATARIO || '',
+    vence: cd4ParsearFecha(f.FECHAVENCE),
+    leido: f.LEIDO === true || String(f.LEIDO || '').toUpperCase() === 'SI',
+    adjuntos: Number(f.NUMADJUNTOS) || 0,   // referencia de la lista; NO es confiable: el botón usa adjuntosReal
+    adjuntosReal: null,
+    estado: f.ESTADOTAREA || '', instruccion: f.INSTRUCCION || '',
+  };
+}
+
+const CD4_URL_ADJUNTOS = 'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/AdjuntosByIdTareaDoc';
+const CD4_URL_BASE64DOC = 'https://controldoc.minsalud.gov.co/Controldoc//Adjuntos/Base64Documento';
+const CD4_CONCURRENCIA_ADJUNTOS = 5;     // consultas simultáneas al contar adjuntos
+const CD4_MAX_CONTEO_ADJUNTOS = 100;     // con listas más largas, el resto se cuenta al abrir cada tarea
+let CD4_RUTA_REPO = '';
+
+function cd4NombreAdjunto(a) { return a.ARCHIVONOMBRE || a.ARCHIVO || a.NOMBREARCHIVO || ''; }
+
+// Adjuntos vigentes de una tarea: la misma consulta de la ventana nativa
+// "DOCUMENTOS → Adjuntos" (los eliminados van en otra pestaña/consulta). Por
+// si acaso, se descartan los que traigan fecha de eliminación.
+async function cd4ObtenerAdjuntos(idTarea) {
+  const resp = await fetch(`${CD4_URL_ADJUNTOS}?IDTAREADOC=${idTarea}&DILIGENCIADO=NO`, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const data = await resp.json();
+  const lista = Array.isArray(data) ? data : ((data && (data.Data || data.OBJETOS)) || []);
+  return lista.filter(a => !cd4ParsearFecha(a.FECHAELIMINO));
+}
+
+// Estado del botón 📎 de cada fila según el conteo real (adjuntosReal):
+// null = contando · número = resultado · 'error' = falló · 'sin-contar' = lista muy larga
+function cd4EstadoBotonAdjuntos(f) {
+  const n = f.adjuntosReal;
+  if (typeof n === 'number') {
+    return n > 0
+      ? { texto: `Adjuntos (${n})`, fondo: '#2563eb', color: '#fff', activo: true, titulo: 'Ver / descargar adjuntos' }
+      : { texto: 'Sin adjuntos', fondo: '#e5e7eb', color: '#9ca3af', activo: false, titulo: 'Esta tarea no tiene adjuntos' };
+  }
+  if (n === 'error') return { texto: 'Adjuntos (?)', fondo: '#fde68a', color: '#92400e', activo: true, titulo: 'No se pudo contar: pulsa para intentarlo de nuevo' };
+  if (n === 'sin-contar') return { texto: 'Adjuntos', fondo: '#dbeafe', color: '#1e3a8a', activo: true, titulo: 'Pulsa para ver los adjuntos' };
+  return { texto: 'Adjuntos (…)', fondo: '#dbeafe', color: '#1e3a8a', activo: true, titulo: 'Contando adjuntos…' };
+}
+
+function cd4ActualizarBotonAdjuntos(f) {
+  const b = document.querySelector(`.cd4-btn-adjuntos[data-tarea="${f.idTarea}"]`);
+  if (!b) return;
+  const e = cd4EstadoBotonAdjuntos(f);
+  b.textContent = '📎 ' + e.texto; b.style.background = e.fondo; b.style.color = e.color;
+  b.style.cursor = e.activo ? 'pointer' : 'not-allowed'; b.disabled = !e.activo; b.title = e.titulo;
+}
+
+// Cuenta los adjuntos reales de cada fila en segundo plano (pocas consultas a
+// la vez, sin bloquear la tabla) y va actualizando cada botón en su sitio.
+async function cd4ContarAdjuntosEnSegundoPlano(filas) {
+  const aContar = filas.filter(f => f.adjuntosReal == null);
+  aContar.slice(CD4_MAX_CONTEO_ADJUNTOS).forEach(f => { f.adjuntosReal = 'sin-contar'; cd4ActualizarBotonAdjuntos(f); });
+  await ejecutarConPool(aContar.slice(0, CD4_MAX_CONTEO_ADJUNTOS), CD4_CONCURRENCIA_ADJUNTOS, async (f) => {
+    try { f.adjuntosReal = (await cd4ObtenerAdjuntos(f.idTarea)).length; }
+    catch (e) { f.adjuntosReal = 'error'; }
+    cd4ActualizarBotonAdjuntos(f);
+  });
+}
+
+async function cd4ObtenerRutaRepo() {
+  if (CD4_RUTA_REPO) return CD4_RUTA_REPO;
+  const r = await fetch('https://controldoc.minsalud.gov.co/Controldoc///Home/ObtenerValorLlave?key=RUTAREPOSITORIO', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(x => x.json());
+  CD4_RUTA_REPO = r.value ?? r.VALOR ?? '';
+  return CD4_RUTA_REPO;
+}
+
+// Adaptado de tdObtenerAdjuntoBlobUrl (script de IDTAREAS): el adjunto vive en
+// una carpeta por año dentro del repositorio, así que se prueba el año que
+// trae el nombre del archivo y, si no, el actual y el anterior.
+async function cd4ObtenerAdjuntoBlob(adjunto) {
+  const rutaRepo = await cd4ObtenerRutaRepo();
+  const archivo = cd4NombreAdjunto(adjunto);
+  if (!archivo) { console.warn('[CD4] El adjunto no trae ARCHIVONOMBRE:', adjunto); return null; }
+
+  const matchAnio = archivo.match(/_(\d{4})\d{10}/);
+  const anioActual = new Date().getFullYear();
+  const anios = [...(matchAnio ? [parseInt(matchAnio[1], 10)] : []), anioActual, anioActual - 1].filter((v, i, a) => a.indexOf(v) === i);
+
+  for (const anio of anios) {
+    const resp = await fetch(CD4_URL_BASE64DOC, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+      body: new URLSearchParams({ Ruta: `${rutaRepo}ADJUNTOS\\${anio}\\`, ArchivoNombre: archivo, RutaFria: `NOADJUNTOS\\${anio}\\` }).toString(),
+    });
+    const data = await resp.json();
+    if (data.RESPUESTA === false) continue;
+    const valor = data.VALORESPUESTA;
+    if (!valor) continue;
+    if (typeof valor === 'string' && valor.startsWith('http')) {
+      const r2 = await fetch(valor, { credentials: 'same-origin' });
+      if (r2.ok) return r2.blob();
+      continue;
+    }
+    try {
+      const binario = atob(valor);
+      const bytes = new Uint8Array(binario.length);
+      for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+      return new Blob([bytes]);
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+async function cd4ObtenerAdjuntoBlobUrl(adjunto) {
+  const blob = await cd4ObtenerAdjuntoBlob(adjunto);
+  return blob ? URL.createObjectURL(blob) : null;
+}
+
+function cd4DescargarBlob(blob, nombre) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ── ZIP sin librerías (método "store", sin compresión: los adjuntos ya vienen
+// comprimidos en su mayoría). Nombres en UTF-8 para conservar tildes y ñ.
+const CD4_TABLA_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t;
+})();
+function cd4Crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CD4_TABLA_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function cd4CrearZip(archivos) {   // archivos: [{ nombre, bytes: Uint8Array }]
+  const enc = new TextEncoder();
+  const ahora = new Date();
+  const dosHora = (ahora.getHours() << 11) | (ahora.getMinutes() << 5) | (ahora.getSeconds() >> 1);
+  const dosFecha = ((ahora.getFullYear() - 1980) << 9) | ((ahora.getMonth() + 1) << 5) | ahora.getDate();
+  const partes = [], central = [];
+  let offset = 0;
+  for (const { nombre, bytes } of archivos) {
+    const nom = enc.encode(nombre);
+    const crc = cd4Crc32(bytes);
+    const loc = new DataView(new ArrayBuffer(30));
+    loc.setUint32(0, 0x04034b50, true); loc.setUint16(4, 20, true); loc.setUint16(6, 0x0800, true); loc.setUint16(8, 0, true);
+    loc.setUint16(10, dosHora, true); loc.setUint16(12, dosFecha, true); loc.setUint32(14, crc, true);
+    loc.setUint32(18, bytes.length, true); loc.setUint32(22, bytes.length, true); loc.setUint16(26, nom.length, true); loc.setUint16(28, 0, true);
+    partes.push(new Uint8Array(loc.buffer), nom, bytes);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true); cen.setUint16(10, 0, true);
+    cen.setUint16(12, dosHora, true); cen.setUint16(14, dosFecha, true); cen.setUint32(16, crc, true);
+    cen.setUint32(20, bytes.length, true); cen.setUint32(24, bytes.length, true); cen.setUint16(28, nom.length, true);
+    cen.setUint16(30, 0, true); cen.setUint16(32, 0, true); cen.setUint16(34, 0, true); cen.setUint16(36, 0, true); cen.setUint32(38, 0, true); cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), nom);
+    offset += 30 + nom.length + bytes.length;
+  }
+  const tamCentral = central.reduce((s, p) => s + p.length, 0);
+  const fin = new DataView(new ArrayBuffer(22));
+  fin.setUint32(0, 0x06054b50, true); fin.setUint16(8, archivos.length, true); fin.setUint16(10, archivos.length, true);
+  fin.setUint32(12, tamCentral, true); fin.setUint32(16, offset, true);
+  return new Blob([...partes, ...central, new Uint8Array(fin.buffer)], { type: 'application/zip' });
+}
+
+// Descarga todos los adjuntos de una tarea: un solo archivo → directo; varios → un ZIP.
+async function cd4DescargarTodos(idTarea, adjuntos, mostrarEstado) {
+  const usados = new Set();
+  const nombreUnico = (n) => {
+    const limpio = n.replace(/[\\/:*?"<>|]+/g, '_') || 'adjunto';
+    let candidato = limpio, k = 2;
+    const punto = limpio.lastIndexOf('.');
+    const [base, ext] = punto > 0 ? [limpio.slice(0, punto), limpio.slice(punto)] : [limpio, ''];
+    while (usados.has(candidato.toLowerCase())) candidato = `${base} (${k++})${ext}`;
+    usados.add(candidato.toLowerCase());
+    return candidato;
+  };
+  const obtenidos = [], fallidos = [];
+  for (let i = 0; i < adjuntos.length; i++) {
+    const nombre = cd4NombreAdjunto(adjuntos[i]) || `adjunto_${i + 1}`;
+    mostrarEstado(`⏳ Descargando ${i + 1} de ${adjuntos.length}…`);
+    try {
+      const blob = await cd4ObtenerAdjuntoBlob(adjuntos[i]);
+      if (!blob) throw new Error('sin archivo');
+      obtenidos.push({ nombre: nombreUnico(nombre), blob });
+    } catch (e) { console.warn('[CD4] No se pudo obtener el adjunto:', nombre, e); fallidos.push(nombre); }
+  }
+  if (!obtenidos.length) { mostrarEstado('❌ No se pudo descargar ningún adjunto. Revisa la consola (F12).'); return; }
+  if (obtenidos.length === 1) {
+    cd4DescargarBlob(obtenidos[0].blob, obtenidos[0].nombre);
+  } else {
+    mostrarEstado('⏳ Armando el ZIP…');
+    const archivos = [];
+    for (const o of obtenidos) archivos.push({ nombre: o.nombre, bytes: new Uint8Array(await o.blob.arrayBuffer()) });
+    cd4DescargarBlob(cd4CrearZip(archivos), `Adjuntos_Tarea_${idTarea}.zip`);
+  }
+  mostrarEstado(fallidos.length
+    ? `⚠️ Se descargaron ${obtenidos.length} de ${adjuntos.length}. No se pudo: ${fallidos.join(', ')}`
+    : `✅ Listo: ${obtenidos.length} archivo(s)${obtenidos.length > 1 ? ' en un ZIP' : ''}.`);
+}
+
+async function cd4MostrarAdjuntos(idTarea) {
+  document.querySelector('#PCD_ModalAdjuntosTarea')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'PCD_ModalAdjuntosTarea';
+  modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.4); z-index:100000; display:flex; align-items:center; justify-content:center;';
+  modal.innerHTML = `
+    <div style="background:#fff; border-radius:8px; padding:16px; width:460px; max-height:80vh; overflow-y:auto; font-size:12px;">
+      <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+        <b>Adjuntos — Tarea ${idTarea}</b>
+        <button id="PCD_CerrarAdjuntosTarea" style="background:none; border:none; font-size:16px; cursor:pointer;">✕</button>
+      </div>
+      <div id="PCD_ListaAdjuntosTarea">⏳ Consultando...</div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#PCD_CerrarAdjuntosTarea').onclick = () => modal.remove();
+  const cont = modal.querySelector('#PCD_ListaAdjuntosTarea');
+
+  let adjuntos = [];
+  try { adjuntos = await cd4ObtenerAdjuntos(idTarea); } catch (e) {
+    cont.innerHTML = `<span style="color:#ea580c;">❌ ${cdEscaparHtml(e.message)}</span>`;
+    return;
+  }
+  // El resultado real corrige el botón de la fila si no coincidía.
+  const fila = CD4_FILAS.find(f => String(f.idTarea) === String(idTarea));
+  if (fila) { fila.adjuntosReal = adjuntos.length; cd4ActualizarBotonAdjuntos(fila); }
+
+  if (!adjuntos.length) { cont.innerHTML = '<i style="color:#6b7280;">Sin adjuntos.</i>'; return; }
+  cont.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+      <button id="PCD_DescargarTodosAdj" style="padding:7px 12px; background:#16a34a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:bold;">⬇ Descargar todos (${adjuntos.length})</button>
+      <span id="PCD_EstadoDescargaAdj" style="color:#6b7280;"></span>
+    </div>` + adjuntos.map((a, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid #f3f4f6;">
+      <span style="word-break:break-all;">${cdEscaparHtml(cd4NombreAdjunto(a) || '(sin nombre)')}</span>
+      <button data-i="${i}" class="cd4-btn-descargar-adjunto" title="Descargar" style="border:none; background:none; cursor:pointer; font-size:14px; flex-shrink:0; margin-left:8px;">📥</button>
+    </div>`).join('');
+
+  const estado = cont.querySelector('#PCD_EstadoDescargaAdj');
+  const btnTodos = cont.querySelector('#PCD_DescargarTodosAdj');
+  btnTodos.onclick = async () => {
+    btnTodos.disabled = true; btnTodos.style.opacity = '0.6';
+    await cd4DescargarTodos(idTarea, adjuntos, (t) => { estado.textContent = t; });
+    btnTodos.disabled = false; btnTodos.style.opacity = '1';
+  };
+  cont.querySelectorAll('.cd4-btn-descargar-adjunto').forEach(btn => {
+    btn.onclick = async () => {
+      const original = btn.textContent; btn.textContent = '⏳';
+      const adj = adjuntos[Number(btn.dataset.i)];
+      const blob = await cd4ObtenerAdjuntoBlob(adj);
+      btn.textContent = original;
+      if (!blob) return alert('No se pudo descargar este adjunto. Revisa la consola (F12).');
+      cd4DescargarBlob(blob, cd4NombreAdjunto(adj) || 'adjunto');
+    };
+  });
+}
+
+function cd4Vencimiento(d) {
+  if (!d) return { texto: '—', fondo: 'transparent', color: '#6b7280' };
+  const dias = Math.ceil((d.getTime() - Date.now()) / 86400000);
+  const fecha = d.toLocaleDateString('es-CO');
+  return dias < 0
+    ? { texto: `${fecha}<br>Vencido hace ${-dias} d`, fondo: '#fecaca', color: '#991b1b' }
+    : { texto: `${fecha}<br>Faltan ${dias} d`, fondo: '#fde68a', color: '#92400e' };
+}
+
+async function cd4CargarLista(clave) {
+  const estado = document.querySelector('#PCD_TareasEstado');
+  const cuenta = CD4_CUENTA_SELECCIONADA;
+  const lista = CD4_LISTAS[clave];
+  document.querySelectorAll('.cd4-btn-lista').forEach(b => { b.style.background = b.dataset.lista === clave ? '#2563eb' : '#e5e7eb'; b.style.color = b.dataset.lista === clave ? '#fff' : '#111827'; });
+  if (!lista.parametros) {
+    CD4_FILAS = []; CD4_CARGADA = null; cd4RenderizarTabla();
+    estado.textContent = `"${lista.etiqueta}" aún no está configurada: falta copiar los parámetros de su petición CargarBandeja en CD4_LISTAS (al inicio del script).`;
+    return;
+  }
+  if (!cuenta) {
+    estado.textContent = 'Primero elige una cuenta: la de tu sesión (si se detectó) o busca una por nombre.';
+    return;
+  }
+  estado.textContent = '⏳ Cargando...';
+  let datos;
+  try {
+    const resp = await fetch(cd4ConstruirUrl(clave, cuenta.idFuncionario), { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const j = await resp.json();
+    datos = Array.isArray(j) ? j : (j.Data || j.OBJETOS || []);
+  } catch (e) {
+    estado.textContent = '❌ No se pudo cargar la lista: ' + e.message;
+    return;
+  }
+  CD4_FILAS = datos.map(cd4ResumirFila);
+  CD4_CARGADA = { lista: clave, cuenta: cuenta.nombre, idFuncionario: cuenta.idFuncionario };
+  document.querySelector('#PCD_TareasFiltro').value = '';
+  const selSalida = document.querySelector('#PCD_TareasSalida'); if (selSalida) selSalida.value = 'todas';
+  cd4RenderizarTabla();
+  cd4ContarAdjuntosEnSegundoPlano(CD4_FILAS);
+}
+
+function cd4RenderizarTabla() {
+  const cont = document.querySelector('#PCD_TareasTabla');
+  const estado = document.querySelector('#PCD_TareasEstado');
+  if (!cont) return;
+  const selSalida = document.querySelector('#PCD_TareasSalida');
+  if (!CD4_CARGADA) { cont.innerHTML = ''; if (selSalida) selSalida.style.display = 'none'; return; }
+  const lista = CD4_LISTAS[CD4_CARGADA.lista];
+  const conIndicador = !!lista.indicadorSalida;   // ✅ tiene IDC (ya salió) / ❌ sin IDC (aún no sale)
+  if (selSalida) selSalida.style.display = conIndicador ? '' : 'none';
+  const modoSalida = conIndicador && selSalida ? selSalida.value : 'todas';
+  const filtro = cd3Normalizar((document.querySelector('#PCD_TareasFiltro').value || '').trim());
+  const visibles = CD4_FILAS
+    .filter(f => !filtro || cd3Normalizar([f.idTarea, f.idc, f.radicado, f.asunto, f.de, f.para, f.clase].join(' ')).includes(filtro))
+    .filter(f => modoSalida === 'todas' || (modoSalida === 'salieron' ? f.conIdc : !f.conIdc));
+  const salieron = CD4_FILAS.filter(f => f.conIdc).length;
+  estado.textContent = `👁️ ${lista.etiqueta} de «${CD4_CARGADA.cuenta}» — solo lectura · ${visibles.length} de ${CD4_FILAS.length}` +
+    (conIndicador ? ` · ✅ ${salieron} con IDC · ❌ ${CD4_FILAS.length - salieron} sin IDC (aún no salen)` : '');
+  if (!visibles.length) { cont.innerHTML = '<div style="color:#9ca3af; font-size:12px; padding:10px 0;">Sin tareas para mostrar.</div>'; return; }
+
+  const e = cdEscaparHtml;
+  cont.innerHTML = `
+    <div style="font-size:10px; color:#6b7280; margin-bottom:4px;">Copiar: <b>T</b> = ID Tarea · <b>C</b> = IDC · <b>A</b> = Asunto</div>
+    <table style="width:100%; table-layout:fixed; border-collapse:collapse; font-size:11px;">
+      <colgroup>
+        <col style="width:10%;"><col style="width:9%;"><col style="width:12%;">
+        <col style="width:13%;"><col style="width:26%;"><col style="width:15%;"><col style="width:15%;">
+      </colgroup>
+      <thead><tr style="background:#f3f4f6; text-align:left;">
+        <th style="padding:4px;">Tarea / IDC</th><th style="padding:4px;">Radicado</th><th style="padding:4px;">Creación</th>
+        <th style="padding:4px;">De → Para</th><th style="padding:4px;">Asunto</th><th style="padding:4px;">Documento</th>
+        <th style="padding:4px;" title="T = ID Tarea · C = IDC · A = Asunto">Copiar</th>
+      </tr></thead>
+      <tbody>${visibles.map(f => { const i = CD4_FILAS.indexOf(f);
+        const icono = conIndicador ? `<span title="${f.conIdc ? 'Con IDC: el documento ya salió / se remitió' : 'Sin IDC: el documento aún no ha salido'}" style="font-size:13px; font-weight:normal;">${f.conIdc ? '✅' : '❌'}</span> ` : '';
+        const textoIdc = f.conIdc ? e(f.idc) : (conIndicador ? '<span style="color:#dc2626;">sin IDC</span>' : '—');
+        const [fechaCrea, horaCrea] = (f.creacion || '').split(' ');
+        const meta = [f.clase, [f.estado, f.instruccion].filter(Boolean).join(' / ')].filter(Boolean).join(' · ');
+        const estAdj = cd4EstadoBotonAdjuntos(f);
+        const btn = 'display:block; width:100%; box-sizing:border-box; padding:7px 4px; font-size:12px; border:none; border-radius:5px; font-weight:normal;';
+        return `
+        <tr style="border-bottom:1px solid #e5e7eb; ${f.leido ? '' : 'font-weight:bold;'} ${conIndicador && !f.conIdc ? 'background:#fff7f7;' : ''}">
+          <td style="padding:5px; word-break:break-word;">${icono}${e(f.idTarea)}<br><span style="color:#6b7280; font-weight:normal;">${textoIdc}</span></td>
+          <td style="padding:5px; word-break:break-all;">${e(f.radicado) || '—'}</td>
+          <td style="padding:5px 3px; font-weight:normal;">${fechaCrea ? e(fechaCrea) + '<br><span style="color:#6b7280;">' + e(horaCrea || '') + '</span>' : '—'}</td>
+          <td style="padding:5px; word-break:break-word;">${e(f.de) || '—'}<br><span style="color:#6b7280; font-weight:normal;">→ ${e(f.para) || '—'}</span></td>
+          <td style="padding:5px; white-space:normal; word-break:break-word; line-height:1.4;">${e(f.asunto)}${meta ? `<div style="color:#9ca3af; font-size:10px; font-weight:normal; margin-top:3px;">${e(meta)}</div>` : ''}</td>
+          <td style="padding:5px;">
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <button data-i="${i}" class="cd4-btn-preview" title="${f.conIdc ? 'Previsualizar el documento (por IDC)' : 'Sin IDC: aún no hay documento para previsualizar'}" style="${btn} background:#e5e7eb; ${f.conIdc ? 'cursor:pointer;' : 'cursor:not-allowed; opacity:0.4;'}" ${f.conIdc ? '' : 'disabled'}>👁 Ver PDF</button>
+              <button data-i="${i}" class="cd4-btn-descargar-pdf" title="${f.conIdc ? 'Descargar el documento en PDF (por IDC)' : 'Sin IDC: aún no hay documento para descargar'}" style="${btn} white-space:normal; line-height:1.2; background:#e5e7eb; ${f.conIdc ? 'cursor:pointer;' : 'cursor:not-allowed; opacity:0.4;'}" ${f.conIdc ? '' : 'disabled'}>⬇ Descargar PDF</button>
+              <button data-i="${i}" data-tarea="${e(f.idTarea)}" class="cd4-btn-adjuntos" title="${estAdj.titulo}" style="${btn} white-space:normal; line-height:1.2; background:${estAdj.fondo}; color:${estAdj.color}; cursor:${estAdj.activo ? 'pointer' : 'not-allowed'};" ${estAdj.activo ? '' : 'disabled'}>📎 ${estAdj.texto}</button>
+            </div>
+          </td>
+          <td style="padding:5px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+              <button data-i="${i}" data-copiar="idTarea" class="cd4-btn-copiar" title="Copiar ID Tarea" style="${btn} background:#e5e7eb; cursor:pointer;">📋T</button>
+              <button data-i="${i}" data-copiar="idc" class="cd4-btn-copiar" title="${f.conIdc ? 'Copiar IDC' : 'Sin IDC'}" style="${btn} background:#e5e7eb; ${f.conIdc ? 'cursor:pointer;' : 'cursor:not-allowed; opacity:0.4;'}" ${f.conIdc ? '' : 'disabled'}>📋C</button>
+              <button data-i="${i}" data-copiar="asunto" class="cd4-btn-copiar" title="Copiar Asunto" style="${btn} grid-column:1 / -1; background:#e5e7eb; cursor:pointer;">📋A</button>
+            </div>
+          </td>
+        </tr>`; }).join('')}</tbody>
+    </table>`;
+
+  cont.querySelectorAll('.cd4-btn-adjuntos').forEach(b => { b.onclick = () => cd4MostrarAdjuntos(CD4_FILAS[Number(b.dataset.i)].idTarea); });
+  cont.querySelectorAll('.cd4-btn-preview').forEach(b => { b.onclick = () => cdPrevisualizarPdf(CD4_FILAS[Number(b.dataset.i)].idc); });
+  cont.querySelectorAll('.cd4-btn-descargar-pdf').forEach(b => {
+    b.onclick = async () => {
+      const original = b.textContent; b.textContent = '⏳ Descargando…'; b.disabled = true;
+      try { await cdDescargarPdf(CD4_FILAS[Number(b.dataset.i)].idc); }
+      catch (e) { alert('No se pudo descargar el PDF: ' + e.message); }
+      finally { b.textContent = original; b.disabled = false; }
+    };
+  });
+  cont.querySelectorAll('.cd4-btn-copiar').forEach(b => {
+    b.onclick = () => {
+      cdCopiarTexto(String(CD4_FILAS[Number(b.dataset.i)][b.dataset.copiar] || ''));
+      const original = b.textContent; b.textContent = '✓'; setTimeout(() => { b.textContent = original; }, 1000);
+    };
+  });
+}
+
+function cd4ExportarExcel() {
+  if (!CD4_CARGADA || !CD4_FILAS.length) return alert('Primero carga una lista con tareas.');
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const conInd = !!CD4_LISTAS[CD4_CARGADA.lista].indicadorSalida;
+  const filas = CD4_FILAS.map(f => `<tr><td>${esc(f.idTarea)}</td><td>${esc(f.conIdc ? f.idc : '')}</td>${conInd ? `<td>${f.conIdc ? 'SÍ' : 'NO'}</td>` : ''}<td>${esc(f.radicado)}</td><td>${esc(f.vence ? f.vence.toLocaleDateString('es-CO') : '')}</td><td>${esc(f.de)}</td><td>${esc(f.para)}</td><td>${esc(f.clase)}</td><td>${esc(f.asunto)}</td><td>${esc(f.creacion || f.nombre)}</td><td>${esc(typeof f.adjuntosReal === 'number' ? f.adjuntosReal : '')}</td><td>${esc(f.estado)}</td><td>${esc(f.instruccion)}</td></tr>`).join('');
+  const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>ID Tarea</th><th>IDC</th>${conInd ? '<th>Salió (con IDC)</th>' : ''}<th>Radicado</th><th>Vence</th><th>De</th><th>Para</th><th>Clase</th><th>Asunto</th><th>Creación</th><th>Adjuntos</th><th>Estado</th><th>Instrucción</th></tr>${filas}</table></body></html>`;
+  const url = URL.createObjectURL(new Blob([html], { type: 'application/vnd.ms-excel' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = `Tareas_${CD4_CARGADA.lista}_${new Date().toISOString().slice(0, 10)}.xls`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
 function cd3CrearPanel() {
   const existente = document.querySelector('#PanelClasificadorDoc');
   if (existente) existente.remove();
@@ -1781,6 +2489,23 @@ function cd3CrearPanel() {
           <span><span id="PCD_FlechaSec2">▾</span> 🔄 Cargar y Clasificar</span>
         </div>
         <div id="PCD_CuerpoSec2" style="display:block; padding:10px;">
+          <label style="color:#6b7280; font-size:11px; font-weight:bold;">👁️ Bandeja a cargar (por defecto, la tuya)</label>
+          <div style="display:flex; gap:6px; margin:4px 0;">
+            <input id="PCD_BandejaBuscarTexto" type="text" placeholder="🌐 Nombre o apellido (toda la entidad)" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <button id="PCD_BandejaBuscarGlobal" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
+          </div>
+          <div style="display:flex; gap:6px; margin:4px 0;">
+            <select id="PCD_BandejaCargo" style="padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+              ${Object.entries(CD3_BANDEJA_CARGOS).map(([nombre, id]) => `<option value="${id}">${nombre}</option>`).join('')}
+            </select>
+            <button id="PCD_BandejaBuscar" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Listar mi Dirección</button>
+            <button id="PCD_BandejaMia" title="Volver a tu propia bandeja" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">↩ Mi bandeja</button>
+          </div>
+          <input id="PCD_BandejaFiltro" type="text" placeholder="Filtrar los resultados por nombre..." style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin-bottom:4px; font-size:11px; box-sizing:border-box;">
+          <select id="PCD_BandejaFuncionario" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px; box-sizing:border-box;">
+            <option value="0">👤 Mi bandeja (predeterminado)</option>
+          </select>
+          <div id="PCD_BandejaEstado" style="font-size:11px; color:#6b7280; margin:4px 0 10px;"></div>
           <button id="PCD_Clasificar" style="width:100%; padding:8px; background:#111827; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🔄 Cargar Documentos Pendientes de la Bandeja</button>
           <div id="PCD_Estado" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
         </div>
@@ -1810,6 +2535,7 @@ function cd3CrearPanel() {
           <span><span id="PCD_FlechaSec3">▾</span> 📊 Resultados <span id="PCD_ContadorResultados" style="color:#6b7280; font-weight:normal;"></span></span>
         </div>
         <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
+          <div id="PCD_BannerBandeja" style="display:none; background:#fef3c7; border-left:4px solid #d97706; color:#92400e; padding:6px 8px; border-radius:4px; margin-bottom:8px; font-size:11px; font-weight:bold;"></div>
           <label style="color:#6b7280; font-size:11px;">Filtrar tabla</label>
           <select id="PCD_FiltroTabla" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
             <option value="todos">📋 Todos</option>
@@ -1867,6 +2593,36 @@ function cd3CrearPanel() {
           <div id="PCD_EstadoAdHoc" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
         </div>
       </div>
+
+      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-top:10px; overflow:hidden;">
+        <div id="PCD_HeaderSec6" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
+          <span><span id="PCD_FlechaSec6">▸</span> 📋 Bandeja de Tareas (solo lectura)</span>
+        </div>
+        <div id="PCD_CuerpoSec6" style="display:none; padding:10px;">
+          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Cuenta</label>
+          <div style="display:flex; gap:6px; margin:3px 0 6px;">
+            <input id="PCD_TareasBuscarTexto" type="text" placeholder="🌐 Buscar cuenta por nombre o apellido" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <button id="PCD_TareasBuscarBtn" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
+          </div>
+          <select id="PCD_TareasCuenta" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin-bottom:6px; font-size:11px; box-sizing:border-box;">
+            <option value="">⏳ Detectando tu sesión...</option>
+          </select>
+          <div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:6px;">
+            ${Object.entries(CD4_LISTAS).map(([clave, l]) => `<button class="cd4-btn-lista" data-lista="${clave}" style="padding:5px 9px; background:#e5e7eb; color:#111827; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">${l.etiqueta}</button>`).join('')}
+          </div>
+          <div style="display:flex; gap:6px; margin-bottom:6px;">
+            <input id="PCD_TareasFiltro" type="text" placeholder="Filtrar por asunto, radicado, ID, persona..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <select id="PCD_TareasSalida" title="Filtrar por si el documento ya salió (tiene IDC)" style="display:none; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+              <option value="todas">Todas</option>
+              <option value="salieron">✅ Con IDC (salieron)</option>
+              <option value="pendientes">❌ Sin IDC (aún no salen)</option>
+            </select>
+            <button id="PCD_TareasExportar" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Excel</button>
+          </div>
+          <div id="PCD_TareasEstado" style="font-size:11px; color:#6b7280; margin-bottom:6px;">Elige una lista para cargarla.</div>
+          <div id="PCD_TareasTabla" style="max-height:340px; overflow:auto;"></div>
+        </div>
+      </div>
     </div>
   `;
   document.body.appendChild(cont);
@@ -1899,8 +2655,18 @@ function cd3CrearPanel() {
   document.querySelector('#PCD_HeaderSec3').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec3', '#PCD_FlechaSec3');
   document.querySelector('#PCD_HeaderSec4').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec4', '#PCD_FlechaSec4');
   document.querySelector('#PCD_HeaderSec5').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec5', '#PCD_FlechaSec5');
+  document.querySelector('#PCD_HeaderSec6').onclick = () => { cd3ToggleSeccion('#PCD_CuerpoSec6', '#PCD_FlechaSec6'); cd4PrepararCuentaPorDefecto(); };
 
   document.querySelector('#PCD_Clasificar').onclick = cd3EjecutarClasificacion;
+
+  document.querySelector('#PCD_BandejaBuscar').onclick = cd3BuscarFuncionariosBandejaUI;
+  document.querySelector('#PCD_BandejaBuscarGlobal').onclick = cd3BuscarFuncionariosGlobalUI;
+  document.querySelector('#PCD_BandejaBuscarTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarFuncionariosGlobalUI(); });
+  document.querySelector('#PCD_BandejaFiltro').addEventListener('input', cd3PintarListaFuncionariosBandeja);
+  document.querySelector('#PCD_BandejaFuncionario').onchange = (e) => cd3ElegirBandeja(Number(e.target.value));
+  document.querySelector('#PCD_BandejaMia').onclick = () => cd3ElegirBandeja(0);
+  cd3PintarListaFuncionariosBandeja();
+  cd3ActualizarBannerBandeja();
   document.querySelector('#PCD_ReasignarTodo').onclick = cd3ReasignarTodosLosClasificados;
 
   document.querySelector('#PCD_FiltroTabla').onchange = (e) => {
@@ -1920,6 +2686,20 @@ function cd3CrearPanel() {
   document.querySelector('#PCD_BuscarOficinaBtn').onclick = cd3BuscarOficinaUI;
   document.querySelector('#PCD_BuscarOficinaTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarOficinaUI(); });
   document.querySelector('#PCD_ReasignarAdHoc').onclick = cd3ReasignarAdHoc;
+
+  document.querySelectorAll('.cd4-btn-lista').forEach(b => { b.onclick = () => cd4CargarLista(b.dataset.lista); });
+  document.querySelector('#PCD_TareasFiltro').addEventListener('input', cd4RenderizarTabla);
+  document.querySelector('#PCD_TareasExportar').onclick = cd4ExportarExcel;
+  document.querySelector('#PCD_TareasBuscarBtn').onclick = cd4BuscarCuentaUI;
+  document.querySelector('#PCD_TareasBuscarTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd4BuscarCuentaUI(); });
+  document.querySelector('#PCD_TareasSalida').addEventListener('change', cd4RenderizarTabla);
+  document.querySelector('#PCD_TareasCuenta').onchange = (e) => {
+    const idFuncionario = Number(e.target.value);
+    const encontrada = [CD4_SESION, ...CD4_CUENTAS, ...CD4_RESULTADOS_CUENTA].filter(Boolean).find(c => c.idFuncionario === idFuncionario);
+    CD4_CUENTA_SELECCIONADA = encontrada || null;
+    CD4_FILAS = []; CD4_CARGADA = null; cd4RenderizarTabla();
+    document.querySelector('#PCD_TareasEstado').textContent = 'Cuenta cambiada. Elige una lista para cargarla.';
+  };
 
   document.querySelector('#PCD_ExportarBitacora').onclick = cdBitacoraExportarExcel;
   document.querySelector('#PCD_ContadorBitacora').textContent = `(${CD_BITACORA.length})`;
