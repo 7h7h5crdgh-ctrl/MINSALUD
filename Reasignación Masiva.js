@@ -721,7 +721,15 @@ function cdHabilitarArrastre(contenedor, agarre) {
     offsetX = e.clientX - rect.left; offsetY = e.clientY - rect.top;
     contenedor.style.right = 'auto'; contenedor.style.left = rect.left + 'px'; contenedor.style.top = rect.top + 'px';
   });
-  document.addEventListener('mousemove', (e) => { if (!arrastrando) return; contenedor.style.left = (e.clientX - offsetX) + 'px'; contenedor.style.top = (e.clientY - offsetY) + 'px'; });
+  document.addEventListener('mousemove', (e) => {
+    if (!arrastrando) return;
+    // No dejar que ningún borde del panel salga de la ventana visible.
+    const maxX = Math.max(0, window.innerWidth - contenedor.offsetWidth);
+    const maxY = Math.max(0, window.innerHeight - contenedor.offsetHeight);
+    const x = Math.min(Math.max(e.clientX - offsetX, 0), maxX);
+    const y = Math.min(Math.max(e.clientY - offsetY, 0), maxY);
+    contenedor.style.left = x + 'px'; contenedor.style.top = y + 'px';
+  });
   document.addEventListener('mouseup', () => { arrastrando = false; });
 }
 
@@ -1074,22 +1082,20 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
 // Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
 // (el mismo mecanismo que usa "Buscador de Usuarios" en la interfaz cuando
 // seleccionas varios destinatarios y le das "Agregar Todos").
-async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, comentario) {
-  const subs = clavesSubdirecciones.map(clave => {
-    const sub = CD2_SUBDIRECCIONES[clave];
-    if (!sub) throw new Error('Subdirección no reconocida: ' + clave);
-    if (sub.idOficina == null) {
-      throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS.`);
-    }
-    return sub;
-  });
-
+// Reasigna a VARIOS destinos ya resueltos ({ idOficina, idUnidad, nombre })
+// en un solo POST — igual mecanismo que "Agregar Todos" en el buscador de
+// usuarios nativo. La usan tanto cd2ReasignarDocumentoMultiple (destinos de
+// CONFIG_DEPENDENCIAS) como el buscador ad-hoc (destinos encontrados al vuelo).
+async function cd2ReasignarADestinos(idDocumento, destinosResueltos, comentario) {
+  for (const d of destinosResueltos) {
+    if (d.idOficina == null) throw new Error(`Falta idOficina para "${d.nombre}".`);
+  }
   const registro = await cd2BuscarEnBandeja(idDocumento);
 
   const destinos = [];
-  for (const sub of subs) {
-    const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad);
-    destinos.push({ sub, jefe });
+  for (const d of destinosResueltos) {
+    const jefe = await cd2ObtenerJefe(d.idOficina, d.idUnidad);
+    destinos.push({ d, jefe });
   }
 
   const listaFuncionarios = destinos.map(({ jefe }) => ({ ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true }));
@@ -1113,9 +1119,21 @@ async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, 
 
   return {
     idDocumento, radicado: registro.RADICADO, asunto: registro.DESCRIPCION || '',
-    destinos: destinos.map(({ sub, jefe }) => ({ nombre: sub.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
+    destinos: destinos.map(({ d, jefe }) => ({ nombre: d.nombre, jefe: jefe.NOMBRESAPELLIDOS })),
     resultado: data, validaciones, movioBandeja,
   };
+}
+
+async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, comentario) {
+  const subs = clavesSubdirecciones.map(clave => {
+    const sub = CD2_SUBDIRECCIONES[clave];
+    if (!sub) throw new Error('Subdirección no reconocida: ' + clave);
+    if (sub.idOficina == null) {
+      throw new Error(`Falta configurar "idOficina" para "${sub.nombre}" en CONFIG_DEPENDENCIAS.`);
+    }
+    return sub;
+  });
+  return cd2ReasignarADestinos(idDocumento, subs, comentario);
 }
 
 async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgreso) {
@@ -1338,6 +1356,7 @@ async function cd3EjecutarClasificacion() {
     CD3_FILA_SELECCIONADA = null;
     estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s)${sufijoBandeja}.`;
     cd3RenderizarResultados();
+    cd3CargarUltimoFlujoEnSegundoPlano();
   }
 
   btn.disabled = false;
@@ -1512,11 +1531,64 @@ function cd3SincronizarTrasAccionExterna(idcComoTexto, exito, mensajeError) {
 }
 
 function cd3AplicarResaltado() {
-  document.querySelectorAll('#PCD_TablaResultados tr[data-fila-idx]').forEach(tr => {
-    const idx = Number(tr.dataset.filaIdx);
-    if (idx === CD3_FILA_SELECCIONADA) { tr.style.background = '#dbeafe'; tr.style.boxShadow = 'inset 3px 0 0 #2563eb'; }
-    else { tr.style.background = ''; tr.style.boxShadow = ''; }
+  document.querySelectorAll('#PCD_TablaResultados .cd3-fila-doc[data-fila-idx]').forEach(el => {
+    const idx = Number(el.dataset.filaIdx);
+    if (idx === CD3_FILA_SELECCIONADA) { el.style.background = '#dbeafe'; el.style.boxShadow = 'inset 3px 0 0 #2563eb'; }
+    else { el.style.background = '#fff'; el.style.boxShadow = ''; }
   });
+}
+
+// ── "Ver en Seguimiento" (mejora 2): abre/reutiliza el panel de Seguimiento
+// de Documento y ejecuta ahí la misma búsqueda que si escribieras el IDC a
+// mano — ficha, flujo y registro en el historial, tal cual.
+function cd3AsegurarPanelSeguimiento() {
+  if (!document.querySelector('#PanelSeguimientoDoc')) cdCrearPanel();
+}
+
+async function cd3VerEnSeguimiento(idc) {
+  cd3AsegurarPanelSeguimiento();
+  const input = document.querySelector('#PSD_Input');
+  input.value = String(idc);
+  await cdEjecutarBusqueda();
+}
+
+// ── Último paso del flujo por documento (mejora 3): quién te lo remitió de
+// verdad. La bandeja de pendientes no lo trae (esos campos llegan vacíos
+// mientras el documento sigue sin tramitar), así que se pide aparte con el
+// mismo endpoint del panel de Seguimiento — en segundo plano, con poca
+// concurrencia, sin bloquear el resto del panel.
+const CD3_CONCURRENCIA_FLUJO = 5;
+
+async function cd3CargarUltimoFlujoEnSegundoPlano() {
+  const pendientes = CD3_DOCUMENTOS.filter(d => d.ultimoFlujo === undefined);
+  await ejecutarConPool(pendientes, CD3_CONCURRENCIA_FLUJO, async (doc) => {
+    doc.ultimoFlujo = 'cargando';
+    try {
+      const pasos = await cdObtenerFlujo(doc.idc, doc.radicado);
+      doc.ultimoFlujo = pasos[0] || null;
+    } catch (e) {
+      doc.ultimoFlujo = 'error';
+    }
+    const cont = document.querySelector(`#cd3-flujo-${doc.idc}`);
+    if (cont) cont.innerHTML = cd3RenderizarFlujoCompacto(doc.ultimoFlujo);
+  });
+}
+
+function cd3RenderizarFlujoCompacto(paso) {
+  if (paso === 'cargando' || paso === undefined) return '<span style="color:#9ca3af;">⏳ Cargando último flujo…</span>';
+  if (paso === 'error') return '<span style="color:#dc2626;">❌ No se pudo cargar el flujo.</span>';
+  if (!paso) return '<span style="color:#9ca3af;">Sin información de flujo.</span>';
+  return `
+    <div style="display:flex; gap:10px;">
+      <div style="flex:1; min-width:0;"><div style="color:#6b7280; font-size:10px;">ENVIADO POR</div>${cdFormatearPersona(paso.USUARIOASIGNO)}</div>
+      <div style="align-self:center; color:#9ca3af;">→</div>
+      <div style="flex:1; min-width:0;"><div style="color:#6b7280; font-size:10px;">RECIBIDO POR</div>${cdFormatearPersona(paso.GESTORNOMBRESAPELLIDOS)}</div>
+    </div>
+    <div style="color:#6b7280; font-size:10px; margin-top:4px;">Estado del flujo: <b>${paso.ESTADOFLUJO || '—'}</b> · ${cdParseAspDate(paso.FECHAASIGNO)}</div>
+    <div style="background:#eff6ff; border-left:3px solid #2563eb; padding:5px 7px; border-radius:4px; margin-top:5px; font-size:11px; color:#111827;">
+      <span style="color:#6b7280; font-size:10px;">Observaciones:</span> ${paso.COMENTARIO ? cdEscaparHtml(paso.COMENTARIO) : '—'}
+    </div>
+  `;
 }
 
 function cd3RenderizarResultados() {
@@ -1553,54 +1625,55 @@ function cd3RenderizarResultados() {
     const seleccionada = i === CD3_FILA_SELECCIONADA;
     const soloLectura = CD3_BANDEJA_CARGADA.idFuncionario !== 0;
     const tituloBloqueo = 'Solo lectura: estás viendo la bandeja de otro funcionario';
+    const accionBtn = 'padding:7px 11px; font-size:12px; border:none; border-radius:5px; cursor:pointer; font-weight:600;';
     return `
-    <tr data-fila-idx="${i}" style="border-bottom:1px solid #e5e7eb; cursor:pointer; ${seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : ''}">
-      <td style="padding:5px; font-weight:bold;">${d.idc}</td>
-      <td style="padding:5px; max-width:260px;">
-        <div style="white-space:normal; word-break:break-word;">${d.asunto}</div>
-        <div style="color:#9ca3af; font-size:10px; margin-top:3px; line-height:1.5;">
-          📅 Radicación: ${d.fechaRadicacion || '—'}<br>
-          📤 Asignación (remitido): ${d.fechaAsignacion || '—'}
+    <div data-fila-idx="${i}" class="cd3-fila-doc" style="border:1px solid #e5e7eb; border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; ${seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : 'background:#fff;'}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+        <div style="font-weight:bold; font-size:14px;">
+          IDC ${d.idc}${d.esPriorizacion ? ' <span title="Priorizaciones y Control Político">🏛️</span>' : ''}
         </div>
-        <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">
-          <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDC</button>
-          <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Rad</button>
-          <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Asu</button>
+        <div style="display:flex; align-items:center; gap:4px;">
+          <label style="color:#6b7280; font-size:10px; font-weight:normal;">Predicción</label>
+          <select data-idx="${i}" class="cd3-select-sub" style="font-size:11px; padding:3px; min-width:180px;">
+            <option value="">— Sin predicción —</option>${opcionesSelect}
+          </select>
+          ${d.confianza === 'baja' ? '<span title="Predicción de baja confianza: revisa manualmente" style="color:#d97706;">⚠️</span>' : ''}
         </div>
-      </td>
-      <td style="padding:5px;">
-        <select data-idx="${i}" class="cd3-select-sub" style="width:100%; font-size:11px; padding:2px;">
-          <option value="">— Sin predicción —</option>${opcionesSelect}
-        </select>
-        ${d.confianza === 'baja' ? '<span title="Predicción de baja confianza: revisa manualmente" style="color:#d97706; font-size:11px;">⚠️</span>' : ''}
-      </td>
-      <td style="padding:5px; text-align:center;" title="Priorizaciones y Control Político">${d.esPriorizacion ? '🏛️' : ''}</td>
-      <td style="padding:5px; text-align:center; white-space:nowrap;">
-        <button data-idx="${i}" class="cd3-btn-preview" title="Previsualizar PDF" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">👁</button>
-        <button data-idx="${i}" class="cd3-btn-adjuntos" title="Descargar Adjuntos" style="padding:3px 5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📎</button>
-        <button data-idx="${i}" class="cd3-btn-reasignar" title="${soloLectura ? tituloBloqueo : 'Reasignar'}" style="padding:3px 5px; background:#111827; color:#fff; border:none; border-radius:4px; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; font-size:11px; ${soloLectura ? 'opacity:0.4;' : ''}" ${(!d.manual || soloLectura) ? 'disabled' : ''}>🚀</button>
-        <button data-idx="${i}" class="cd3-btn-cerrar" title="${soloLectura ? tituloBloqueo : 'Cerrar por comentario (comunicación informativa)'}" style="padding:3px 5px; background:#0d9488; color:#fff; border:none; border-radius:4px; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; font-size:11px; ${soloLectura ? 'opacity:0.4;' : ''}" ${soloLectura ? 'disabled' : ''}>🗂️</button>
-        <span style="margin-left:2px;" title="${d.mensajeEstado || ''}">${iconoEstado}</span>
-      </td>
-    </tr>`;
+      </div>
+
+      <div style="margin-top:6px; font-size:12px; word-break:break-word;">${d.asunto}</div>
+      <div style="color:#9ca3af; font-size:10px; margin-top:3px; line-height:1.5;">
+        📅 Radicación: ${d.fechaRadicacion || '—'} &nbsp;·&nbsp; 📤 Asignación (remitido): ${d.fechaAsignacion || '—'}
+      </div>
+
+      <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
+        <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDC</button>
+        <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Rad</button>
+        <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Asu</button>
+      </div>
+
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center;">
+        <button data-idx="${i}" class="cd3-btn-preview" title="Previsualizar el PDF en una pestaña nueva" style="${accionBtn} background:#e5e7eb;">👁 Ver PDF</button>
+        <button data-idx="${i}" class="cd3-btn-ver-seguimiento" title="Ver ficha y flujo completos en el panel de Seguimiento (se guarda en su historial)" style="${accionBtn} background:#2563eb; color:#fff;">🔎 Ver Seguimiento</button>
+        <button data-idx="${i}" class="cd3-btn-adjuntos" title="Descargar Adjuntos" style="${accionBtn} background:#e5e7eb;">📎 Adjuntos</button>
+        <button data-idx="${i}" class="cd3-btn-reasignar" title="${soloLectura ? tituloBloqueo : 'Reasignar'}" style="${accionBtn} background:#111827; color:#fff; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; ${soloLectura ? 'opacity:0.4;' : ''}" ${(!d.manual || soloLectura) ? 'disabled' : ''}>🚀 Reasignar</button>
+        <button data-idx="${i}" class="cd3-btn-cerrar" title="${soloLectura ? tituloBloqueo : 'Cerrar por comentario (comunicación informativa)'}" style="${accionBtn} background:#0d9488; color:#fff; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; ${soloLectura ? 'opacity:0.4;' : ''}" ${soloLectura ? 'disabled' : ''}>🗂️ Cerrar</button>
+        <span title="${d.mensajeEstado || ''}" style="font-size:14px;">${iconoEstado}</span>
+      </div>
+
+      <div id="cd3-flujo-${d.idc}" style="margin-top:8px; padding:6px 8px; background:#f9fafb; border-radius:6px; font-size:11px;">${cd3RenderizarFlujoCompacto(d.ultimoFlujo)}</div>
+    </div>`;
   }).join('');
 
-  cont.innerHTML = `
-    <table style="width:100%; border-collapse:collapse; font-size:12px;">
-      <thead><tr style="background:#f3f4f6; text-align:left;">
-        <th style="padding:5px;">IDC</th><th style="padding:5px;">Asunto</th><th style="padding:5px;">Predicción</th><th style="padding:5px;" title="Priorizaciones y Control Político">🏛️</th><th style="padding:5px;">Acciones</th>
-      </tr></thead>
-      <tbody>${filas}</tbody>
-    </table>
-  `;
+  cont.innerHTML = filas;
 
-  // Resaltar fila al hacer clic en ella (excepto sobre el <select>, que ya
-  // se resalta solo al cambiar de predicción, para no cerrarle el desplegable
-  // nativo a medio elegir).
-  cont.querySelectorAll('tr[data-fila-idx]').forEach(tr => {
-    tr.addEventListener('click', (e) => {
+  // Resaltar la tarjeta al hacer clic en ella (excepto sobre el <select>, que
+  // ya se resalta solo al cambiar de predicción, para no cerrarle el
+  // desplegable nativo a medio elegir).
+  cont.querySelectorAll('.cd3-fila-doc[data-fila-idx]').forEach(el => {
+    el.addEventListener('click', (e) => {
       if (e.target.tagName === 'SELECT') return;
-      CD3_FILA_SELECCIONADA = Number(tr.dataset.filaIdx);
+      CD3_FILA_SELECCIONADA = Number(el.dataset.filaIdx);
       cd3RenderizarResultados();
     });
   });
@@ -1631,6 +1704,18 @@ function cd3RenderizarResultados() {
       CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
       const doc = CD3_DOCUMENTOS[idx];
       cdPrevisualizarPdf(doc.idc);
+    };
+  });
+
+  cont.querySelectorAll('.cd3-btn-ver-seguimiento').forEach(btn => {
+    btn.onclick = async () => {
+      const idx = Number(btn.dataset.idx);
+      CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
+      const doc = CD3_DOCUMENTOS[idx];
+      const original = btn.textContent;
+      btn.textContent = '⏳ Cargando…'; btn.disabled = true;
+      try { await cd3VerEnSeguimiento(doc.idc); }
+      finally { btn.textContent = original; btn.disabled = false; }
     };
   });
 
@@ -1815,6 +1900,29 @@ function cd3TruncarTexto(str, n) {
 
 let CD3_RESULTADOS_OFICINA = [];   // últimas oficinas encontradas
 
+// Destinos elegidos con "📥 Usar para reasignar" (puede haber varios).
+let CD3_DESTINOS_ADHOC = [];
+
+function cd3PintarDestinosAdHoc() {
+  const cont = document.querySelector('#PCD_DestinosAdHocLista');
+  const btnLimpiar = document.querySelector('#PCD_DestinosAdHocLimpiar');
+  if (!cont) return;
+  if (!CD3_DESTINOS_ADHOC.length) {
+    cont.innerHTML = '<div style="color:#9ca3af; font-size:11px; padding:4px 0;">(ningún destino elegido aún)</div>';
+    if (btnLimpiar) btnLimpiar.style.display = 'none';
+    return;
+  }
+  if (btnLimpiar) btnLimpiar.style.display = '';
+  cont.innerHTML = CD3_DESTINOS_ADHOC.map((d, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; background:#eff6ff; border:1px solid #bfdbfe; border-radius:4px; padding:4px 8px; margin-bottom:4px; font-size:11px;">
+      <span>${cdEscaparHtml(d.nombre)}</span>
+      <button data-idx="${i}" class="cd3-btn-quitar-destino" title="Quitar este destino" style="border:none; background:none; color:#dc2626; cursor:pointer; font-weight:bold; padding:0 4px;">✕</button>
+    </div>`).join('');
+  cont.querySelectorAll('.cd3-btn-quitar-destino').forEach(btn => {
+    btn.onclick = () => { CD3_DESTINOS_ADHOC.splice(Number(btn.dataset.idx), 1); cd3PintarDestinosAdHoc(); };
+  });
+}
+
 async function cd3BuscarOficinaUI() {
   const texto = document.querySelector('#PCD_BuscarOficinaTexto').value.trim();
   const cont = document.querySelector('#PCD_ResultadosOficina');
@@ -1861,31 +1969,36 @@ async function cd3BuscarOficinaUI() {
     btn.onclick = () => {
       const i = Number(btn.dataset.idx);
       const o = CD3_RESULTADOS_OFICINA[i];
-      document.querySelector('#PCD_DestinoAdHocNombre').value = o.NOMBRE;
-      document.querySelector('#PCD_DestinoAdHocOficina').value = o.IDOFICINAPRODUCTORA;
-      document.querySelector('#PCD_DestinoAdHocUnidad').value = o.IDUNIDADADMINISTRATIVA;
+      const nuevo = { idOficina: o.IDOFICINAPRODUCTORA, idUnidad: o.IDUNIDADADMINISTRATIVA, nombre: o.NOMBRE };
+      if (!CD3_DESTINOS_ADHOC.some(d => d.idOficina === nuevo.idOficina && d.idUnidad === nuevo.idUnidad)) {
+        CD3_DESTINOS_ADHOC.push(nuevo);
+      }
+      cd3PintarDestinosAdHoc();
+      // Limpia la búsqueda para dejar el espacio libre para la siguiente.
+      document.querySelector('#PCD_BuscarOficinaTexto').value = '';
+      cont.innerHTML = '';
+      CD3_RESULTADOS_OFICINA = [];
     };
   });
 }
 
-// Reasigna uno o varios IDCs al destino ad-hoc que se dejó cargado en los
-// campos de "Usar para reasignar" (llenados por el buscador de oficinas).
+// Reasigna uno o varios IDCs a TODOS los destinos elegidos arriba (uno o
+// varios), en un solo POST por IDC — igual que la Reasignación Manual, pero
+// con destinos encontrados al vuelo en vez de los de CONFIG_DEPENDENCIAS.
 async function cd3ReasignarAdHoc() {
-  const nombre = document.querySelector('#PCD_DestinoAdHocNombre').value.trim();
-  const idOficina = document.querySelector('#PCD_DestinoAdHocOficina').value.trim();
-  const idUnidad = document.querySelector('#PCD_DestinoAdHocUnidad').value.trim();
   const idsRaw = document.querySelector('#PCD_DestinoAdHocIds').value.trim();
   const estado = document.querySelector('#PCD_EstadoAdHoc');
   const btn = document.querySelector('#PCD_ReasignarAdHoc');
 
-  if (!nombre || !idOficina) return alert('Primero busca una dependencia arriba y pulsa "📥 Usar para reasignar".');
+  if (!CD3_DESTINOS_ADHOC.length) return alert('Primero busca una dependencia arriba y pulsa "📥 Usar para reasignar" (puedes elegir varias).');
   if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado.');
   const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
   const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+  const destinos = CD3_DESTINOS_ADHOC.slice();
+  const nombreDestinos = destinos.map(d => d.nombre).join(' + ');
 
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a "${nombre}" (fuera de tu lista configurada)?\n\nDocumentos: ${lista.join(', ')}`)) return;
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombreDestinos}\n\n(fuera de tu lista configurada)\n\nDocumentos: ${lista.join(', ')}`)) return;
 
-  const destino = { idOficina: Number(idOficina), idUnidad: idUnidad ? Number(idUnidad) : undefined, nombre };
   const textoOriginal = btn.textContent;
   btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'not-allowed';
   estado.textContent = `⏳ Procesando 0/${lista.length}...`;
@@ -1894,11 +2007,12 @@ async function cd3ReasignarAdHoc() {
   await ejecutarConPool(lista, CONCURRENCIA_MAXIMA, async (idRaw) => {
     const id = idRaw.trim();
     try {
-      const r = await cd2ReasignarADestino(id, destino, comentario);
-      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, asunto: r.asunto, destino: nombre, funcionario: r.jefe, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      const r = await cd2ReasignarADestinos(id, destinos, comentario);
+      const funcionarios = r.destinos.map(d => d.jefe).join(' + ');
+      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, asunto: r.asunto, destino: nombreDestinos, funcionario: funcionarios, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
       cd3SincronizarTrasAccionExterna(id, r.movioBandeja);
       if (r.movioBandeja) exitosos++; else fallidos++;
-      console.log(r.movioBandeja ? '✅' : '❌', id, '→', nombre, r.resultado);
+      console.log(r.movioBandeja ? '✅' : '❌', id, '→', nombreDestinos, r.resultado);
     } catch (e) { fallidos++; console.log('❌', id, e.message); }
   }, (completados, total) => { estado.textContent = `⏳ Procesando ${completados}/${total}...`; });
 
@@ -2584,12 +2698,13 @@ function cd3CrearPanel() {
           </div>
           <div id="PCD_ResultadosOficina" style="max-height:180px; overflow-y:auto; margin-bottom:10px;"></div>
 
-          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Reasignar al destino elegido arriba (📥 Usar para reasignar)</label>
-          <input id="PCD_DestinoAdHocNombre" type="text" readonly placeholder="(ningún destino elegido aún)" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; background:#f9fafb; box-sizing:border-box;">
-          <input id="PCD_DestinoAdHocOficina" type="hidden">
-          <input id="PCD_DestinoAdHocUnidad" type="hidden">
-          <textarea id="PCD_DestinoAdHocIds" rows="3" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 8px; box-sizing:border-box;" placeholder="IDCs o Radicados a enviar a ese destino"></textarea>
-          <button id="PCD_ReasignarAdHoc" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar al destino de arriba</button>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+            <label style="color:#6b7280; font-size:11px; font-weight:bold;">Destino(s) elegidos (📥 Usar para reasignar) — puedes elegir varios</label>
+            <button id="PCD_DestinosAdHocLimpiar" style="display:none; padding:2px 6px; font-size:10px; background:#fee2e2; color:#991b1b; border:none; border-radius:4px; cursor:pointer;">🗑 Eliminar seleccionados</button>
+          </div>
+          <div id="PCD_DestinosAdHocLista" style="margin:3px 0 8px;"></div>
+          <textarea id="PCD_DestinoAdHocIds" rows="3" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 8px; box-sizing:border-box;" placeholder="IDCs o Radicados a enviar a esos destinos"></textarea>
+          <button id="PCD_ReasignarAdHoc" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a los destinos de arriba</button>
           <div id="PCD_EstadoAdHoc" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
         </div>
       </div>
@@ -2686,6 +2801,8 @@ function cd3CrearPanel() {
   document.querySelector('#PCD_BuscarOficinaBtn').onclick = cd3BuscarOficinaUI;
   document.querySelector('#PCD_BuscarOficinaTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarOficinaUI(); });
   document.querySelector('#PCD_ReasignarAdHoc').onclick = cd3ReasignarAdHoc;
+  document.querySelector('#PCD_DestinosAdHocLimpiar').onclick = () => { CD3_DESTINOS_ADHOC = []; cd3PintarDestinosAdHoc(); };
+  cd3PintarDestinosAdHoc();
 
   document.querySelectorAll('.cd4-btn-lista').forEach(b => { b.onclick = () => cd4CargarLista(b.dataset.lista); });
   document.querySelector('#PCD_TareasFiltro').addEventListener('input', cd4RenderizarTabla);
@@ -2724,7 +2841,15 @@ function cd3HabilitarArrastre(contenedor, agarre) {
     offsetX = e.clientX - rect.left; offsetY = e.clientY - rect.top;
     contenedor.style.right = 'auto'; contenedor.style.left = rect.left + 'px'; contenedor.style.top = rect.top + 'px';
   });
-  document.addEventListener('mousemove', (e) => { if (!arrastrando) return; contenedor.style.left = (e.clientX - offsetX) + 'px'; contenedor.style.top = (e.clientY - offsetY) + 'px'; });
+  document.addEventListener('mousemove', (e) => {
+    if (!arrastrando) return;
+    // No dejar que ningún borde del panel salga de la ventana visible.
+    const maxX = Math.max(0, window.innerWidth - contenedor.offsetWidth);
+    const maxY = Math.max(0, window.innerHeight - contenedor.offsetHeight);
+    const x = Math.min(Math.max(e.clientX - offsetX, 0), maxX);
+    const y = Math.min(Math.max(e.clientY - offsetY, 0), maxY);
+    contenedor.style.left = x + 'px'; contenedor.style.top = y + 'px';
+  });
   document.addEventListener('mouseup', () => { arrastrando = false; });
 }
 
