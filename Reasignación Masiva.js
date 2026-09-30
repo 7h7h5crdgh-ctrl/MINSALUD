@@ -151,7 +151,7 @@ const CD4_LISTAS = {
 // Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
 // masivos ("Reasignar clasificados" y "Reasignación Manual"). Pediste 5 en
 // simultáneo: sube o baja este número aquí si más adelante quieres ajustarlo.
-const CONCURRENCIA_MAXIMA = 25;
+let CONCURRENCIA_MAXIMA = 25;
 
 // Corre `tareaFn` sobre cada elemento de `items`, con como máximo `limite`
 // tareas en vuelo al mismo tiempo (en vez de esperar a que cada una termine
@@ -409,6 +409,7 @@ function cdCargarDesdeHistorial(indice) {
   contenido.innerHTML = cdPlantillaBase(entrada.doc);
   document.querySelector('#PSD_Ficha').innerHTML = entrada.ficha ? cdPlantillaFicha(entrada.ficha) : '<div style="color:#ea580c;">Sin ficha en caché.</div>';
   document.querySelector('#PSD_Flujo').innerHTML = cdPlantillaFlujo(entrada.pasos || []);
+  cdWirearFiltroFlujo();
   const badge = document.querySelector('#PSD_Badge');
   if (badge) {
     const estado = cdEstadoGlobal((entrada.pasos || [])[0], entrada.doc.STRESTADODOCUMENTO);
@@ -494,12 +495,21 @@ async function cdBuscarOficinaPorNombre(textoBusqueda) {
   return coincidencias;
 }
 
+function cdColorPorEstadoFlujo(estadoFlujoRaw) {
+  const estadoFlujo = (estadoFlujoRaw || '').toUpperCase().trim();
+  if (estadoFlujo.includes('EXITOSA')) return { color: '#16a34a', fondo: '#dcfce7' };
+  if (estadoFlujo === 'TRANSITO') return { color: '#2563eb', fondo: '#dbeafe' };
+  if (estadoFlujo === 'SIN INICIAR TRAMITE' || !estadoFlujo) return { color: '#6b7280', fondo: '#f3f4f6' };
+  return { color: '#92400e', fondo: '#fef3c7' };
+}
+
 function cdEstadoGlobal(pasoReciente, strEstadoDocumento) {
   const estadoFlujo = (pasoReciente?.ESTADOFLUJO || '').toUpperCase().trim();
-  if (estadoFlujo.includes('EXITOSA')) return { texto: 'Gestión exitosa', color: '#16a34a', fondo: '#dcfce7' };
-  if (estadoFlujo === 'TRANSITO') return { texto: 'En tránsito', color: '#2563eb', fondo: '#dbeafe' };
-  if (estadoFlujo === 'SIN INICIAR TRAMITE' || !estadoFlujo) return { texto: strEstadoDocumento || 'Sin tramitar', color: '#6b7280', fondo: '#f3f4f6' };
-  return { texto: estadoFlujo, color: '#92400e', fondo: '#fef3c7' };
+  const c = cdColorPorEstadoFlujo(pasoReciente?.ESTADOFLUJO);
+  if (estadoFlujo.includes('EXITOSA')) return { texto: 'Gestión exitosa', ...c };
+  if (estadoFlujo === 'TRANSITO') return { texto: 'En tránsito', ...c };
+  if (estadoFlujo === 'SIN INICIAR TRAMITE' || !estadoFlujo) return { texto: strEstadoDocumento || 'Sin tramitar', ...c };
+  return { texto: estadoFlujo, ...c };
 }
 
 function cdSanitizarBase64(str) {
@@ -643,10 +653,10 @@ function cdCrearPanel() {
   if (existente) existente.remove();
   const cont = document.createElement('div');
   cont.id = 'PanelSeguimientoDoc';
-  cont.style.cssText = 'position:fixed; top:20px; right:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:460px; max-height:88vh; overflow-y:auto; font-family:sans-serif; font-size:13px;';
+  cont.style.cssText = 'position:fixed; top:20px; right:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:460px; max-height:92vh; overflow:hidden; display:flex; flex-direction:column; font-family:sans-serif; font-size:13px;';
   cont.style.zoom = CD_ESCALA_UI;
   cont.innerHTML = `
-    <div id="PSD_Encabezado" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:10px; cursor:grab; user-select:none;">
+    <div id="PSD_Encabezado" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:10px; cursor:grab; user-select:none; flex-shrink:0;">
       <span>🔎 Seguimiento de Documento — ControlDoc</span>
       <div style="display:flex; align-items:center; gap:2px;">
         <button id="PSD_EscalaMenos" title="Reducir tamaño de la interfaz" style="background:none; border:none; font-size:14px; cursor:pointer; padding:2px 4px;">🔍➖</button>
@@ -656,14 +666,14 @@ function cdCrearPanel() {
         <button id="PSD_Cerrar" title="Cerrar" style="background:none; border:none; color:#666; font-size:16px; font-weight:bold; cursor:pointer; padding:2px 6px;">✕</button>
       </div>
     </div>
-    <div id="PSD_Cuerpo">
+    <div id="PSD_Cuerpo" style="flex:1; min-height:0; overflow-y:auto; padding-right:4px;">
       <div style="display:flex; gap:6px; margin-bottom:10px;">
         <input id="PSD_Input" type="text" placeholder="IDC (2306470) o Radicado" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px;">
         <button id="PSD_Buscar" style="padding:6px 12px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Buscar</button>
       </div>
       <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
-        <div id="PSD_HeaderHistorial" style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#f9fafb; cursor:pointer; font-size:12px; font-weight:bold;">
-          <span><span id="PSD_FlechaHistorial">▸</span> 🕘 Historial de búsquedas</span>
+        <div id="PSD_HeaderHistorial" style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#f9fafb; cursor:pointer; font-size:12px; font-weight:bold; border-left:4px solid #0369a1;">
+          <span style="color:#0369a1;"><span id="PSD_FlechaHistorial">▸</span> 🕘 Historial de búsquedas</span>
         </div>
         <div id="PSD_CuerpoHistorial" style="display:none; max-height:200px; overflow-y:auto;">
           <div style="display:flex; justify-content:flex-end; padding:4px 8px; border-bottom:1px solid #f3f4f6;">
@@ -699,14 +709,14 @@ function cdCrearPanel() {
 
   let minimizado = false;
   const btnMin = document.querySelector('#PSD_Minimizar');
-  const cuerpo = document.querySelector('#PSD_Cuerpo');
   btnMin.addEventListener('mousedown', (e) => e.stopPropagation());
   btnMin.onclick = () => {
-    minimizado = !minimizado;
-    cuerpo.style.display = minimizado ? 'none' : 'block';
-    cont.style.width = minimizado ? '280px' : '460px';
-    btnMin.textContent = minimizado ? '🔼' : '➖';
-    btnMin.title = minimizado ? 'Expandir' : 'Minimizar';
+    minimizado = true;
+    cont.style.display = 'none';
+    cdCrearBurbujaMinimizada({
+      contenedor: cont, emoji: '🔎', colorFondo: 'linear-gradient(135deg, #60a5fa, #38bdf8)', id: 'PSD_Burbuja',
+      alRestaurar: () => { minimizado = false; cont.style.display = 'block'; },
+    });
   };
 
   document.querySelector('#PSD_Buscar').onclick = () => cdEjecutarBusqueda();
@@ -723,14 +733,61 @@ function cdHabilitarArrastre(contenedor, agarre) {
   });
   document.addEventListener('mousemove', (e) => {
     if (!arrastrando) return;
-    // No dejar que ningún borde del panel salga de la ventana visible.
-    const maxX = Math.max(0, window.innerWidth - contenedor.offsetWidth);
-    const maxY = Math.max(0, window.innerHeight - contenedor.offsetHeight);
-    const x = Math.min(Math.max(e.clientX - offsetX, 0), maxX);
-    const y = Math.min(Math.max(e.clientY - offsetY, 0), maxY);
-    contenedor.style.left = x + 'px'; contenedor.style.top = y + 'px';
+    // Solo se limita el borde superior (no puede quedar por encima de la
+    // ventana, donde perderías el agarre); por izquierda, derecha y abajo sí
+    // puede salir, como pediste.
+    const y = Math.max(e.clientY - offsetY, 0);
+    contenedor.style.left = (e.clientX - offsetX) + 'px'; contenedor.style.top = y + 'px';
   });
   document.addEventListener('mouseup', () => { arrastrando = false; });
+}
+
+// ── Burbuja de minimizado ──
+// En vez de solo achicar el panel, lo oculta por completo y deja esta bolita
+// flotante y arrastrable en su lugar (mismo límite de arrastre: no se puede
+// ir por encima de la ventana). Un clic simple (sin arrastrar) la quita y
+// vuelve a mostrar el panel; arrastrarla la mueve sin restaurar nada.
+function cdCrearBurbujaMinimizada({ contenedor, emoji, colorFondo, id, alRestaurar }) {
+  document.querySelector('#' + id)?.remove();
+  const rect = contenedor.getBoundingClientRect();
+  const burbuja = document.createElement('div');
+  burbuja.id = id;
+  burbuja.title = 'Clic para expandir — arrástrala para moverla';
+  burbuja.style.cssText = `position:fixed; top:${Math.max(rect.top, 0)}px; left:${Math.max(rect.left, 0)}px; width:48px; height:48px; border-radius:50%; background:${colorFondo}; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; box-shadow:0 4px 14px rgba(0,0,0,0.35); cursor:grab; z-index:100000; user-select:none;`;
+  burbuja.textContent = emoji;
+  document.body.appendChild(burbuja);
+
+  let arrastrando = false, offsetX = 0, offsetY = 0, movioBastante = false, startX = 0, startY = 0;
+
+  const alMoverMouse = (e) => {
+    if (!arrastrando) return;
+    if (Math.abs(e.clientX - startX) > 4 || Math.abs(e.clientY - startY) > 4) movioBastante = true;
+    const y = Math.max(e.clientY - offsetY, 0); // igual que los paneles: nunca por encima de la ventana
+    burbuja.style.left = (e.clientX - offsetX) + 'px';
+    burbuja.style.top = y + 'px';
+  };
+  const alSoltarMouse = () => {
+    if (!arrastrando) return;
+    arrastrando = false;
+    burbuja.style.cursor = 'grab';
+    if (!movioBastante) {
+      document.removeEventListener('mousemove', alMoverMouse);
+      document.removeEventListener('mouseup', alSoltarMouse);
+      burbuja.remove();
+      alRestaurar();
+    }
+  };
+  burbuja.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    arrastrando = true; movioBastante = false;
+    startX = e.clientX; startY = e.clientY;
+    const r = burbuja.getBoundingClientRect();
+    offsetX = e.clientX - r.left; offsetY = e.clientY - r.top;
+    burbuja.style.cursor = 'grabbing';
+  });
+  document.addEventListener('mousemove', alMoverMouse);
+  document.addEventListener('mouseup', alSoltarMouse);
+  return burbuja;
 }
 
 async function cdEjecutarBusqueda() {
@@ -757,6 +814,7 @@ async function cdEjecutarBusqueda() {
   try {
     pasos = await cdObtenerFlujo(idDocumento, radicado);
     document.querySelector('#PSD_Flujo').innerHTML = cdPlantillaFlujo(pasos);
+    cdWirearFiltroFlujo();
     const badge = document.querySelector('#PSD_Badge');
     if (badge) {
       const estado = cdEstadoGlobal(pasos[0], doc.STRESTADODOCUMENTO);
@@ -807,9 +865,39 @@ function cdPlantillaFicha(ficha) {
   `;
 }
 
+// Cada paso del historial, ya en orden cronológico (el más viejo primero),
+// como un punto en una línea de tiempo vertical — con color según su estado,
+// para que el ojo distinga de un vistazo qué pasos fueron gestión exitosa,
+// cuáles quedaron en tránsito, etc., en vez de leer un bloque de texto plano.
+function cdFilaTimelineFlujo(x, i, total) {
+  const c = cdColorPorEstadoFlujo(x.ESTADOFLUJO);
+  const esActual = i === total - 1; // el último en orden cronológico = el paso más reciente
+  const buscar = cd3Normalizar(`${cdLimpiarHTML(x.USUARIOASIGNO)} ${cdLimpiarHTML(x.GESTORNOMBRESAPELLIDOS)} ${x.ESTADOFLUJO || ''} ${x.ACCION || ''}`);
+  return `
+    <div class="psd-paso-flujo" data-buscar="${cdEscaparHtml(buscar)}" style="display:flex; gap:8px;">
+      <div style="display:flex; flex-direction:column; align-items:center; flex-shrink:0; width:14px;">
+        <div style="width:10px; height:10px; border-radius:50%; background:${c.color}; margin-top:4px; flex-shrink:0; ${esActual ? `box-shadow:0 0 0 3px ${c.fondo};` : ''}"></div>
+        ${i < total - 1 ? `<div style="flex:1; width:2px; background:#e5e7eb; margin-top:2px;"></div>` : ''}
+      </div>
+      <div style="flex:1; padding-bottom:12px; font-size:11px; min-width:0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
+          <span style="color:#9ca3af;">Paso #${x.ORDEN ?? (i + 1)}${esActual ? ' — <b style="color:#111827;">ACTUAL</b>' : ''}</span>
+          <span style="padding:1px 7px; border-radius:10px; background:${c.fondo}; color:${c.color}; font-weight:bold; font-size:10px; white-space:nowrap;">${x.ESTADOFLUJO || '—'}</span>
+        </div>
+        <div style="margin-top:3px;">${cdFormatearPersona(x.USUARIOASIGNO)} <span style="color:#9ca3af;">→</span> ${cdFormatearPersona(x.GESTORNOMBRESAPELLIDOS)}</div>
+        <div style="color:#9ca3af; font-size:10px; margin-top:2px;">${cdParseAspDate(x.FECHAASIGNO)}${x.ACCION ? ' · ' + x.ACCION : ''}</div>
+        ${x.COMENTARIO ? `<div style="background:#f9fafb; border-left:2px solid ${c.color}; padding:4px 6px; border-radius:4px; margin-top:4px; color:#4b5563; font-size:10.5px;">${x.COMENTARIO}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+// El filtro de la línea de tiempo se conecta aparte (cdWirearFiltroFlujo),
+// justo después de insertar este HTML en el panel.
 function cdPlantillaFlujo(pasos) {
   if (!pasos.length) return '<i>Sin información de flujo.</i>';
-  const p = pasos[0];
+  const p = pasos[0]; // el más reciente: define el resumen de arriba
+  const cActual = cdColorPorEstadoFlujo(p.ESTADOFLUJO);
+  const cronologico = pasos.slice().reverse(); // de más viejo a más nuevo, como una historia
   return `
     <div style="display:flex; gap:10px; margin-bottom:6px;">
       <div style="flex:1;"><div style="color:#6b7280; font-size:11px;">ENVIADO POR</div>${cdFormatearPersona(p.USUARIOASIGNO)}
@@ -817,21 +905,35 @@ function cdPlantillaFlujo(pasos) {
       <div style="align-self:center; color:#9ca3af; font-size:18px;">→</div>
       <div style="flex:1;"><div style="color:#6b7280; font-size:11px;">RECIBIDO POR</div>${cdFormatearPersona(p.GESTORNOMBRESAPELLIDOS)}</div>
     </div>
-    <div style="display:grid; grid-template-columns:auto 1fr; gap:2px 8px; margin-top:4px;">
-      <span style="color:#6b7280;">Estado del flujo:</span><span style="font-weight:bold;">${p.ESTADOFLUJO || '—'}</span>
-      <span style="color:#6b7280;">Acción/indicación:</span><span>${p.ACCION || '—'}</span>
+    <div style="display:flex; align-items:center; gap:8px; margin-top:4px; flex-wrap:wrap;">
+      <span style="color:#6b7280; font-size:11px;">Estado del flujo:</span>
+      <span style="padding:2px 9px; border-radius:10px; background:${cActual.fondo}; color:${cActual.color}; font-weight:bold; font-size:11px;">${p.ESTADOFLUJO || '—'}</span>
+      ${p.ACCION ? `<span style="color:#6b7280; font-size:11px;">· ${p.ACCION}</span>` : ''}
     </div>
     <div style="background:#eff6ff; border-left:3px solid #2563eb; padding:6px 8px; border-radius:4px; margin-top:6px;">${p.COMENTARIO || '—'}</div>
-    <details style="margin-top:8px;"><summary style="cursor:pointer; color:#2563eb; font-weight:bold;">Ver historial completo (${pasos.length})</summary>
-      ${pasos.map(x => `
-        <div style="border-top:1px solid #e5e7eb; padding:6px 0; font-size:12px;">
-          <div><span style="color:#9ca3af;">#${x.ORDEN}</span> ${cdFormatearPersona(x.USUARIOASIGNO)} → ${cdFormatearPersona(x.GESTORNOMBRESAPELLIDOS)}</div>
-          <div style="margin-top:2px;"><span style="font-weight:bold;">${x.ESTADOFLUJO || ''}</span> — ${x.ACCION || ''}</div>
-          <div style="color:#4b5563;"><i>${x.COMENTARIO || ''}</i></div>
-        </div>
-      `).join('')}
+
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer; color:#2563eb; font-weight:bold;">📜 Línea de tiempo completa (${pasos.length} paso${pasos.length === 1 ? '' : 's'})</summary>
+      ${pasos.length > 4 ? `<input id="PSD_FiltroFlujo" type="text" placeholder="🔎 Filtrar por nombre o estado..." style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:8px 0; font-size:11px; box-sizing:border-box;">` : ''}
+      <div id="PSD_TimelineFlujo" style="margin-top:8px;">
+        ${cronologico.map((x, i) => cdFilaTimelineFlujo(x, i, cronologico.length)).join('')}
+      </div>
     </details>
   `;
+}
+
+// Conecta el filtro de texto de la línea de tiempo (si el flujo tiene más de
+// 4 pasos, que es cuando aparece el cuadro). Se llama justo después de pintar
+// #PSD_Flujo, tanto al buscar en vivo como al cargar desde el historial.
+function cdWirearFiltroFlujo() {
+  const input = document.querySelector('#PSD_FiltroFlujo');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    const q = cd3Normalizar(input.value.trim());
+    document.querySelectorAll('.psd-paso-flujo').forEach(el => {
+      el.style.display = (!q || (el.dataset.buscar || '').includes(q)) ? 'flex' : 'none';
+    });
+  });
 }
 
 async function cdMostrarAsociados(idDocumento) {
@@ -1343,6 +1445,7 @@ async function cd3EjecutarClasificacion() {
     CD3_DOCUMENTOS = [];
     CD3_FILA_SELECCIONADA = null;
     cd3RenderizarResultados();
+    cd3CambiarTab('resultados');
   } else {
     CD3_DOCUMENTOS = pendientes.map(doc => {
       const { prediccion, esPriorizacion, confianza } = cd3ClasificarDocumento(doc);
@@ -1357,6 +1460,7 @@ async function cd3EjecutarClasificacion() {
     estado.textContent = `✅ ${CD3_DOCUMENTOS.length} documento(s) clasificado(s)${sufijoBandeja}.`;
     cd3RenderizarResultados();
     cd3CargarUltimoFlujoEnSegundoPlano();
+    cd3CambiarTab('resultados');
   }
 
   btn.disabled = false;
@@ -1514,7 +1618,7 @@ function cd3ProgramarLimpieza(doc) {
       CD3_DOCUMENTOS.splice(idx, 1);
       cd3RenderizarResultados();
     }
-  }, 5000);
+  }, 1000);
 }
 
 // Si el IDC que se acaba de reasignar/cerrar por un camino "externo" a la
@@ -1550,6 +1654,44 @@ async function cd3VerEnSeguimiento(idc) {
   const input = document.querySelector('#PSD_Input');
   input.value = String(idc);
   await cdEjecutarBusqueda();
+}
+
+// Descarga el PDF y los adjuntos del documento JUNTOS en un solo .zip. El zip
+// de adjuntos que arma ControlDoc no se descomprime (evita depender de una
+// librería de inflate): se incluye tal cual como un archivo más dentro del
+// zip final, junto al PDF — al abrirlo verás el PDF suelto y, si había
+// adjuntos, un segundo archivo "Adjuntos_<idc>.zip" con ellos adentro.
+async function cd3DescargarPdfYAdjuntosZip(idDocumento) {
+  const pdfBlobUrl = await cdObtenerPdfBlobUrl(idDocumento);
+  if (!pdfBlobUrl) { alert('No se encontró un PDF válido para este documento.'); return; }
+  const pdfBytes = new Uint8Array(await (await fetch(pdfBlobUrl)).arrayBuffer());
+  URL.revokeObjectURL(pdfBlobUrl);
+
+  let adjuntosBytes = null;
+  try {
+    const resp = await cdFetchPost(CD_CONFIG.urlGuardarZip, { IDDOCUMENTO: idDocumento, DILIGENCIADOS: 'NO' });
+    const data = await resp.json();
+    if (data && data.RESPUESTA === true && data.VALORESPUESTA) {
+      const valor = data.VALORESPUESTA;
+      if (typeof valor === 'string' && valor.startsWith('http')) {
+        const r2 = await fetch(valor, { credentials: 'same-origin' });
+        if (r2.ok) adjuntosBytes = new Uint8Array(await (await r2.blob()).arrayBuffer());
+      } else if (typeof valor === 'string') {
+        try {
+          const bin = atob(cdSanitizarBase64(valor));
+          adjuntosBytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) adjuntosBytes[i] = bin.charCodeAt(i);
+        } catch (e) { /* no era base64 válido: se descarga solo el PDF */ }
+      }
+    }
+  } catch (e) {
+    console.warn('[CD3] No se pudo obtener el zip de adjuntos, se descargará solo el PDF:', e.message);
+  }
+
+  const archivos = [{ nombre: `Documento_${idDocumento}.pdf`, bytes: pdfBytes }];
+  if (adjuntosBytes && adjuntosBytes.length) archivos.push({ nombre: `Adjuntos_${idDocumento}.zip`, bytes: adjuntosBytes });
+
+  cd4DescargarBlob(cd4CrearZip(archivos), `Documento_${idDocumento}_completo.zip`);
 }
 
 // ── Último paso del flujo por documento (mejora 3): quién te lo remitió de
@@ -1607,6 +1749,14 @@ function cd3RenderizarResultados() {
   else if (CD3_FILTRO_ACTUAL === 'baja-confianza') documentosFiltrados = CD3_DOCUMENTOS.filter(d => d.confianza === 'baja');
   else if (CD3_SUBDIRECCIONES[CD3_FILTRO_ACTUAL]) documentosFiltrados = CD3_DOCUMENTOS.filter(d => d.manual === CD3_FILTRO_ACTUAL);
 
+  // Filtro adicional por terminación del radicado (se suma al de arriba, no lo
+  // reemplaza): "1,2,3" muestra solo los que terminan en esos dígitos.
+  const terminaciones = (document.querySelector('#PCD_FiltroRadicadoTerminacion')?.value || '')
+    .split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
+  if (terminaciones.length) {
+    documentosFiltrados = documentosFiltrados.filter(d => terminaciones.some(t => String(d.radicado || '').endsWith(t)));
+  }
+
   contador.textContent = `(${documentosFiltrados.length} de ${CD3_DOCUMENTOS.length})`;
 
   const opcionesSelect = Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `<option value="${clave}">${sub.emoji} ${sub.nombre}</option>`).join('');
@@ -1623,18 +1773,31 @@ function cd3RenderizarResultados() {
       : d.estadoEnvio === 'advertencia' ? '⚠️'
       : d.estadoEnvio === 'enviando' ? '⏳' : '';
     const seleccionada = i === CD3_FILA_SELECCIONADA;
+    const exito = d.estadoEnvio === 'ok';
+    const enviando = d.estadoEnvio === 'enviando';
     const soloLectura = CD3_BANDEJA_CARGADA.idFuncionario !== 0;
     const tituloBloqueo = 'Solo lectura: estás viendo la bandeja de otro funcionario';
+    const tituloEnviando = 'Hay una acción en curso sobre este documento: espera a que termine.';
     const accionBtn = 'padding:7px 11px; font-size:12px; border:none; border-radius:5px; cursor:pointer; font-weight:600;';
+    // Prioridad del color de la tarjeta: éxito (verde) > en proceso (naranja) > seleccionada (azul) > normal.
+    const estiloTarjeta = exito
+      ? 'background:#dcfce7; box-shadow:inset 3px 0 0 #16a34a; transition:background 0.3s;'
+      : enviando
+        ? 'background:#ffedd5; box-shadow:inset 3px 0 0 #f97316;'
+        : (seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : 'background:#fff;');
+    // Mientras se está reasignando/cerrando, se bloquean todos los controles
+    // de la tarjeta para evitar una segunda acción sobre el mismo documento.
+    const btnAux = (extra = '') => `padding:3px 7px; font-size:11px; border:none; border-radius:4px; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : 'cursor:pointer;'} ${extra}`;
     return `
-    <div data-fila-idx="${i}" class="cd3-fila-doc" style="border:1px solid #e5e7eb; border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; ${seleccionada ? 'background:#dbeafe; box-shadow:inset 3px 0 0 #2563eb;' : 'background:#fff;'}">
+    <div data-fila-idx="${i}" class="cd3-fila-doc" style="border:1px solid #e5e7eb; border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; ${estiloTarjeta}">
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
-        <div style="font-weight:bold; font-size:14px;">
-          IDC ${d.idc}${d.esPriorizacion ? ' <span title="Priorizaciones y Control Político">🏛️</span>' : ''}
+        <div>
+          <div style="font-weight:bold; font-size:14px;">IDC ${d.idc}${d.esPriorizacion ? ' <span title="Priorizaciones y Control Político">🏛️</span>' : ''}</div>
+          <div style="color:#6b7280; font-size:11px; font-weight:normal; margin-top:1px;">Radicado: ${d.radicado ? cdEscaparHtml(String(d.radicado)) : '—'}</div>
         </div>
         <div style="display:flex; align-items:center; gap:4px;">
           <label style="color:#6b7280; font-size:10px; font-weight:normal;">Predicción</label>
-          <select data-idx="${i}" class="cd3-select-sub" style="font-size:11px; padding:3px; min-width:180px;">
+          <select data-idx="${i}" class="cd3-select-sub" style="font-size:11px; padding:3px; min-width:180px;" ${enviando ? 'disabled' : ''}>
             <option value="">— Sin predicción —</option>${opcionesSelect}
           </select>
           ${d.confianza === 'baja' ? '<span title="Predicción de baja confianza: revisa manualmente" style="color:#d97706;">⚠️</span>' : ''}
@@ -1642,22 +1805,25 @@ function cd3RenderizarResultados() {
       </div>
 
       <div style="margin-top:6px; font-size:12px; word-break:break-word;">${d.asunto}</div>
-      <div style="color:#9ca3af; font-size:10px; margin-top:3px; line-height:1.5;">
+      <div style="color:#dc2626; font-size:12px; font-weight:bold; margin-top:5px; line-height:1.6;">
         📅 Radicación: ${d.fechaRadicacion || '—'} &nbsp;·&nbsp; 📤 Asignación (remitido): ${d.fechaAsignacion || '—'}
       </div>
 
       <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
-        <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDC</button>
-        <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Rad</button>
-        <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Asu</button>
+        <button data-idx="${i}" data-copiar="idc" class="cd3-btn-copiar" title="Copiar IDC" style="${btnAux('background:#e5e7eb;')}" ${enviando ? 'disabled' : ''}>📋 IDC</button>
+        <button data-idx="${i}" data-copiar="radicado" class="cd3-btn-copiar" title="Copiar Radicado" style="${btnAux('background:#e5e7eb;')}" ${enviando ? 'disabled' : ''}>📋 Rad</button>
+        <button data-idx="${i}" data-copiar="asunto" class="cd3-btn-copiar" title="Copiar Asunto" style="${btnAux('background:#e5e7eb;')}" ${enviando ? 'disabled' : ''}>📋 Asu</button>
+        <button data-idx="${i}" class="cd3-btn-descargar-pdf-solo" title="${enviando ? tituloEnviando : 'Descargar solo el PDF del documento'}" style="${btnAux('background:#e0e7ff; color:#3730a3;')}" ${enviando ? 'disabled' : ''}>⬇ PDF</button>
+        <button data-idx="${i}" class="cd3-btn-descargar-todo-zip" title="${enviando ? tituloEnviando : 'Descargar el PDF + los adjuntos, juntos en un solo .zip'}" style="${btnAux('background:#e0e7ff; color:#3730a3;')}" ${enviando ? 'disabled' : ''}>📦 ZIP (PDF+Adj.)</button>
       </div>
 
       <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; align-items:center;">
-        <button data-idx="${i}" class="cd3-btn-preview" title="Previsualizar el PDF en una pestaña nueva" style="${accionBtn} background:#e5e7eb;">👁 Ver PDF</button>
-        <button data-idx="${i}" class="cd3-btn-ver-seguimiento" title="Ver ficha y flujo completos en el panel de Seguimiento (se guarda en su historial)" style="${accionBtn} background:#2563eb; color:#fff;">🔎 Ver Seguimiento</button>
-        <button data-idx="${i}" class="cd3-btn-adjuntos" title="Descargar Adjuntos" style="${accionBtn} background:#e5e7eb;">📎 Adjuntos</button>
-        <button data-idx="${i}" class="cd3-btn-reasignar" title="${soloLectura ? tituloBloqueo : 'Reasignar'}" style="${accionBtn} background:#111827; color:#fff; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; ${soloLectura ? 'opacity:0.4;' : ''}" ${(!d.manual || soloLectura) ? 'disabled' : ''}>🚀 Reasignar</button>
-        <button data-idx="${i}" class="cd3-btn-cerrar" title="${soloLectura ? tituloBloqueo : 'Cerrar por comentario (comunicación informativa)'}" style="${accionBtn} background:#0d9488; color:#fff; cursor:${soloLectura ? 'not-allowed' : 'pointer'}; ${soloLectura ? 'opacity:0.4;' : ''}" ${soloLectura ? 'disabled' : ''}>🗂️ Cerrar</button>
+        <button data-idx="${i}" class="cd3-btn-preview" title="${enviando ? tituloEnviando : 'Previsualizar el PDF en una pestaña nueva'}" style="${accionBtn} background:#e5e7eb; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>👁 Ver PDF</button>
+        <button data-idx="${i}" class="cd3-btn-ver-seguimiento" title="${enviando ? tituloEnviando : 'Ver ficha y flujo completos en el panel de Seguimiento (se guarda en su historial)'}" style="${accionBtn} background:#2563eb; color:#fff; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>🔎 Ver Seguimiento</button>
+        <button data-idx="${i}" class="cd3-btn-adjuntos" title="${enviando ? tituloEnviando : 'Descargar Adjuntos'}" style="${accionBtn} background:#e5e7eb; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>📎 Adjuntos</button>
+        <button data-idx="${i}" class="cd3-btn-reasignar" title="${enviando ? tituloEnviando : (soloLectura ? tituloBloqueo : 'Reasignar')}" style="${accionBtn} background:#111827; color:#fff; cursor:${(soloLectura || enviando) ? 'not-allowed' : 'pointer'}; ${(soloLectura || enviando) ? 'opacity:0.4;' : ''}" ${(!d.manual || soloLectura || enviando) ? 'disabled' : ''}>🚀 Reasignar</button>
+        <button data-idx="${i}" class="cd3-btn-cerrar" title="${enviando ? tituloEnviando : (soloLectura ? tituloBloqueo : 'Cerrar por comentario (comunicación informativa)')}" style="${accionBtn} background:#0d9488; color:#fff; cursor:${(soloLectura || enviando) ? 'not-allowed' : 'pointer'}; ${(soloLectura || enviando) ? 'opacity:0.4;' : ''}" ${(soloLectura || enviando) ? 'disabled' : ''}>🗂️ Cerrar</button>
+        <button data-idx="${i}" class="cd3-btn-buscar-destino" title="${enviando ? tituloEnviando : 'Abrir la pestaña 🔎 Buscar con este IDC ya listo, para reasignarlo a una dependencia fuera de tu lista'}" style="${accionBtn} background:#7c3aed; color:#fff; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>🔎 Buscar destino</button>
         <span title="${d.mensajeEstado || ''}" style="font-size:14px;">${iconoEstado}</span>
       </div>
 
@@ -1698,6 +1864,44 @@ function cd3RenderizarResultados() {
     };
   });
 
+  cont.querySelectorAll('.cd3-btn-descargar-pdf-solo').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
+      const original = btn.textContent; btn.textContent = '⏳'; btn.disabled = true;
+      try { await cdDescargarPdf(doc.idc); }
+      catch (err) { alert('No se pudo descargar el PDF: ' + err.message); }
+      finally { btn.textContent = original; btn.disabled = false; }
+    };
+  });
+
+  cont.querySelectorAll('.cd3-btn-descargar-todo-zip').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const doc = CD3_DOCUMENTOS[Number(btn.dataset.idx)];
+      const original = btn.textContent; btn.textContent = '⏳ Armando ZIP…'; btn.disabled = true;
+      try { await cd3DescargarPdfYAdjuntosZip(doc.idc); }
+      catch (err) { alert('No se pudo generar el ZIP: ' + err.message); }
+      finally { btn.textContent = original; btn.disabled = false; }
+    };
+  });
+
+  cont.querySelectorAll('.cd3-btn-buscar-destino').forEach(btn => {
+    btn.onclick = () => {
+      const idx = Number(btn.dataset.idx);
+      CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
+      const doc = CD3_DOCUMENTOS[idx];
+      cd3CambiarTab('buscador');
+      const campo = document.querySelector('#PCD_DestinoAdHocIds');
+      if (campo && !campo.value.split(/[\n,;]+/).map(s => s.trim()).includes(String(doc.idc))) {
+        campo.value = campo.value.trim() ? campo.value.trim() + '\n' + doc.idc : String(doc.idc);
+      }
+      document.querySelector('#PCD_BuscarOficinaTexto')?.focus();
+    };
+  });
+
   cont.querySelectorAll('.cd3-btn-preview').forEach(btn => {
     btn.onclick = () => {
       const idx = Number(btn.dataset.idx);
@@ -1735,10 +1939,13 @@ function cd3RenderizarResultados() {
       const doc = CD3_DOCUMENTOS[idx];
       if (!doc.manual) return;
       const sub = CD2_SUBDIRECCIONES[doc.manual];
-      const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+      const comentarioPorDefecto = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
       const jefe = await cd2ObtenerJefe(sub.idOficina, sub.idUnidad).catch(() => null);
       const nombreJefe = jefe ? jefe.NOMBRESAPELLIDOS : '(jefe no identificado)';
-      if (!confirm(`¿Reasignar el IDC ${doc.idc} a "${sub.nombre}"?\n\nJefe destino: ${nombreJefe}`)) return;
+      const comentarioEditado = prompt(`Reasignar el IDC ${doc.idc} a "${sub.nombre}".\nJefe destino: ${nombreJefe}\n\nPuedes editar el comentario antes de confirmar:`, comentarioPorDefecto);
+      if (comentarioEditado === null) return; // canceló
+      const comentario = comentarioEditado.trim();
+      if (!comentario) return alert('El comentario no puede quedar vacío.');
       doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
       try {
         const r = await cd2ReasignarDocumento(String(doc.idc), doc.manual, comentario);
@@ -1762,8 +1969,11 @@ function cd3RenderizarResultados() {
       const idx = Number(btn.dataset.idx);
       CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
       const doc = CD3_DOCUMENTOS[idx];
-      const comentario = document.querySelector('#PCD_ComentarioCierre')?.value.trim() || CD2_COMENTARIO_CIERRE_DEFAULT;
-      if (!confirm(`¿Cerrar el IDC ${doc.idc} por comentario (comunicación informativa)?\n\nComentario: "${comentario}"`)) return;
+      const comentarioPorDefecto = document.querySelector('#PCD_ComentarioCierre')?.value.trim() || CD2_COMENTARIO_CIERRE_DEFAULT;
+      const comentarioEditado = prompt(`Cerrar el IDC ${doc.idc} por comentario (comunicación informativa).\n\nPuedes editar el texto antes de confirmar:`, comentarioPorDefecto);
+      if (comentarioEditado === null) return; // canceló
+      const comentario = comentarioEditado.trim();
+      if (!comentario) return alert('El comentario no puede quedar vacío.');
       doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
       try {
         const r = await cd2CerrarPorComentario(String(doc.idc), comentario);
@@ -1797,10 +2007,9 @@ async function cd3ReasignarTodosLosClasificados() {
   pendientes.forEach(d => { if (!grupos[d.manual]) grupos[d.manual] = []; grupos[d.manual].push(d); });
   const resumen = Object.entries(grupos).map(([clave, docs]) => `${CD3_SUBDIRECCIONES[clave].nombre}: ${docs.length} documento(s)`).join('\n');
   const etiquetaFiltro = CD3_FILTRO_ACTUAL === 'todos' ? 'todos los clasificados' : `el filtro activo`;
-
-  if (!confirm(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\n¿Confirmas?`)) return;
-
   const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+
+  if (!confirm(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\nComentario: "${comentario}"\n\n¿Confirmas?`)) return;
   const estado = document.querySelector('#PCD_EstadoReasignacionMasiva');
 
   const textoOriginal = btn.textContent;
@@ -1861,7 +2070,7 @@ async function cd3ReasignarManualMultiple() {
   if (!clavesSeleccionadas.length) return alert('Marca al menos una dependencia destino.');
 
   const nombresDestinos = clavesSeleccionadas.map(c => CD2_SUBDIRECCIONES[c].nombre).join(' + ');
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nDocumentos: ${lista.join(', ')}`)) return;
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nComentario: "${comentario}"\n\nDocumentos: ${lista.join(', ')}`)) return;
 
   const textoOriginal = btn.textContent;
   estado.textContent = `⏳ Procesando 0/${lista.length}... (${CONCURRENCIA_MAXIMA} a la vez)`;
@@ -1997,7 +2206,7 @@ async function cd3ReasignarAdHoc() {
   const destinos = CD3_DESTINOS_ADHOC.slice();
   const nombreDestinos = destinos.map(d => d.nombre).join(' + ');
 
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombreDestinos}\n\n(fuera de tu lista configurada)\n\nDocumentos: ${lista.join(', ')}`)) return;
+  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombreDestinos}\n\n(fuera de tu lista configurada)\n\nComentario: "${comentario}"\n\nDocumentos: ${lista.join(', ')}`)) return;
 
   const textoOriginal = btn.textContent;
   btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'not-allowed';
@@ -2552,12 +2761,375 @@ function cd4ExportarExcel() {
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }
 
+// ════════════════════════════════════════════════════════════════
+// ═══ DETALLE DE TAREA POR IDTAREADOC (script aportado, integrado) ═══
+// Flujo de trabajo completo (todas las versiones, no solo la última),
+// remitente real vs. sesión activa, destinatarios/copias/adjuntos.
+// ════════════════════════════════════════════════════════════════
+
+const TD_CONFIG = {
+  urlValidar:        'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ValidarTraladosRadicados/',
+  urlCrearDoc:       'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/CrearDoc',
+  urlPdfB64:         'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/Base64DocumentoPdf',
+  urlRutaRepo:       'https://controldoc.minsalud.gov.co/Controldoc///Home/ObtenerValorLlave?key=RUTAREPOSITORIO',
+  urlDest:           'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerDestEntidades',
+  urlAdjuntos:       'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/AdjuntosByIdTareaDoc',
+  urlCopiasFun:      'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerCopiasFuncionarios',
+  urlCopiasEnt:      'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ObtenerCopiasEntidades',
+  urlBase64Doc:      'https://controldoc.minsalud.gov.co/Controldoc//Adjuntos/Base64Documento',
+};
+
+async function tdFetchPost(url, paramsObj) {
+  return fetch(url, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+    body: new URLSearchParams(paramsObj).toString(),
+  });
+}
+async function tdFetchGet(url) {
+  return fetch(url, { method: 'GET', credentials: 'same-origin' });
+}
+
+function tdParseAspDate(str) {
+  const m = /\/Date\((-?\d+)\)\//.exec(str || '');
+  if (!m) return str || '—';
+  const ms = parseInt(m[1], 10);
+  if (ms < 0) return '—';
+  return new Date(ms).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function tdExtraerVar(html, nombre) {
+  const m = new RegExp(`${nombre}\\s*=\\s*(?:parseInt\\()?'([^']*)'`).exec(html);
+  return m ? m[1] : '';
+}
+
+function tdExtraerSesion(html) {
+  return {
+    usuarioSesion: tdExtraerVar(html, 'REMITENTENAME'),
+    oficinaSesion: tdExtraerVar(html, 'REMITENTEOFICE'),
+    medioEnvio: tdExtraerVar(html, 'TDOCA_MEDIOENVIO'),
+  };
+}
+
+function tdExtraerFlujoJSON(html) {
+  const marcador = '"data":{"Data":[';
+  const idxClave = html.indexOf(marcador);
+  if (idxClave === -1) return [];
+  const idxInicio = html.indexOf('[', idxClave);
+  let profundidad = 0, idxFin = -1;
+  for (let i = idxInicio; i < html.length; i++) {
+    if (html[i] === '[') profundidad++;
+    else if (html[i] === ']') { profundidad--; if (profundidad === 0) { idxFin = i; break; } }
+  }
+  if (idxFin === -1) return [];
+  try {
+    return JSON.parse(html.substring(idxInicio, idxFin + 1));
+  } catch (e) {
+    console.error('No se pudo parsear el flujo:', e.message);
+    return [];
+  }
+}
+
+// Resuelve el "VALORESPUESTA" ya sea que venga como URL directa o como base64
+async function tdResolverBlobDesdeRespuesta(data) {
+  const valor = data.VALORESPUESTA;
+  if (!valor) return null;
+
+  if (typeof valor === 'string' && valor.startsWith('http')) {
+    const resp = await fetch(valor, { credentials: 'same-origin' });
+    if (!resp.ok) { console.warn('[TD] Fallo al descargar desde la URL, status:', resp.status); return null; }
+    return URL.createObjectURL(await resp.blob());
+  }
+
+  try {
+    const binario = atob(valor);
+    const bytes = new Uint8Array(binario.length);
+    for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes]));
+  } catch (e) {
+    console.warn('[TD] VALORESPUESTA no es URL ni base64 válido:', valor);
+    return null;
+  }
+}
+
+// ---- previsualización/descarga de la versión de PDF diligenciado ----
+async function tdObtenerPdfBlobUrl(nombreArchivo) {
+  if (!nombreArchivo) { console.warn('[TD] NOMBREARCHIVO vacío'); return null; }
+
+  const rutaRepoResp = await tdFetchGet(TD_CONFIG.urlRutaRepo).then(r => r.json());
+  const rutaRepo = rutaRepoResp.value ?? rutaRepoResp.VALOR ?? '';
+
+  const archivo = nombreArchivo.toLowerCase().endsWith('.pdf') ? nombreArchivo : `${nombreArchivo}.pdf`;
+
+  const resp = await tdFetchPost(TD_CONFIG.urlPdfB64, {
+    Ruta: rutaRepo + 'PDF\\DOC_DILIGENCIADO\\',
+    ArchivoNombre: archivo,
+    RutaFria: 'NOPDF\\DOC_DILIGENCIADO\\',
+  });
+  const data = await resp.json();
+  return tdResolverBlobDesdeRespuesta(data);
+}
+
+// ---- descarga de adjuntos ----
+async function tdObtenerAdjuntoBlobUrl(adjunto) {
+  console.log('[TD] Objeto adjunto crudo:', adjunto);
+
+  const rutaRepoResp = await tdFetchGet(TD_CONFIG.urlRutaRepo).then(r => r.json());
+  const rutaRepo = rutaRepoResp.value ?? rutaRepoResp.VALOR ?? '';
+
+  const archivo = adjunto.ARCHIVONOMBRE || adjunto.ARCHIVO || adjunto.NOMBREARCHIVO;
+  if (!archivo) {
+    console.warn('[TD] No se encontró ARCHIVONOMBRE en el objeto de arriba.');
+    return null;
+  }
+
+  const matchAnio = archivo.match(/_(\d{4})\d{10}/);
+  const anioActual = new Date().getFullYear();
+  const aniosCandidatos = [
+    ...(matchAnio ? [parseInt(matchAnio[1], 10)] : []),
+    anioActual, anioActual - 1,
+  ].filter((v, i, arr) => arr.indexOf(v) === i);
+
+  for (const anio of aniosCandidatos) {
+    const ruta = `${rutaRepo}ADJUNTOS\\${anio}\\`;
+    const resp = await tdFetchPost(TD_CONFIG.urlBase64Doc, {
+      Ruta: ruta,
+      ArchivoNombre: archivo,
+      RutaFria: `NOADJUNTOS\\${anio}\\`,
+    });
+    const data = await resp.json();
+    console.log(`[TD] Respuesta Base64Documento (año ${anio}):`, data);
+
+    if (data.RESPUESTA === false) continue;
+
+    const url = await tdResolverBlobDesdeRespuesta(data);
+    if (url) return url;
+  }
+
+  console.warn('[TD] No se encontró el archivo en ninguno de los años probados.');
+  return null;
+}
+
+async function tdConsultarTarea(idTarea) {
+  await tdFetchPost(TD_CONFIG.urlValidar, { IDTAREADOC: idTarea });
+  const html = await tdFetchPost(TD_CONFIG.urlCrearDoc, {
+    TipoDocumento: 'D', IdTareaInicial: idTarea, IdTareaActual: idTarea,
+    Editar: 'NO', INSTRUCCIONES: 'REVISAR', IDRAD: 0,
+  }).then(r => r.text());
+  return { sesion: tdExtraerSesion(html), flujo: tdExtraerFlujoJSON(html) };
+}
+
+function tdEstadoGlobal(ultimoPaso) {
+  if (!ultimoPaso) return { texto: '—', color: '#6b7280', fondo: '#f3f4f6' };
+  const instruccion = (ultimoPaso.INSTRUCCION || '').toUpperCase().trim();
+  const estadoFirma = (ultimoPaso.ESTADOFIRMA || '').toUpperCase().trim();
+  if (instruccion === 'FIRMAR' && estadoFirma.includes('FIRMADO')) {
+    return { texto: 'ENVÍO EXITOSO', color: '#16a34a', fondo: '#dcfce7' };
+  }
+  return {
+    texto: `${ultimoPaso.ESTADOTAREA || '—'} / ${ultimoPaso.INSTRUCCION || '—'}`,
+    color: '#2563eb', fondo: '#dbeafe',
+  };
+}
+
+let tdAdjuntosCache = [];
+
+// Reemplaza al tdCrearPanel()/tdEjecutarBusqueda() originales del script
+// aportado: en vez de abrir una ventana flotante propia, pinta dentro de la
+// sección "📋 Detalle de Tarea" del Clasificador.
+async function tdEjecutarBusqueda() {
+  const idTarea = document.querySelector('#TD_Input').value.trim();
+  const contenido = document.querySelector('#TD_Contenido');
+  if (!idTarea) return;
+  contenido.innerHTML = '<div style="padding:10px; color:#666;">⏳ Consultando...</div>';
+
+  let resultado, adjuntos = [];
+  try {
+    [resultado, adjuntos] = await Promise.all([
+      tdConsultarTarea(idTarea),
+      tdFetchGet(`${TD_CONFIG.urlAdjuntos}?IDTAREADOC=${idTarea}`).then(r => r.json()).catch(() => []),
+    ]);
+  } catch (err) {
+    contenido.innerHTML = `<div style="padding:10px; color:#ea580c;">❌ ${err.message}</div>`;
+    return;
+  }
+
+  tdAdjuntosCache = adjuntos || [];
+  const { sesion, flujo } = resultado;
+  if (!flujo.length) {
+    contenido.innerHTML = '<div style="padding:10px; color:#ea580c;">❌ No se encontró flujo para ese IDTAREADOC.</div>';
+    return;
+  }
+  const ultimoPaso = flujo[flujo.length - 1];
+  const remitenteReal = flujo[0]?.FUNCIONARIOCREO || '—';
+  const estado = tdEstadoGlobal(ultimoPaso);
+
+  contenido.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div>
+        <span style="color:#6b7280; font-size:11px;">IDTAREADOC</span>
+        <span style="font-weight:bold; font-size:15px; color:#b45309;"> ${idTarea}</span>
+      </div>
+      <span style="padding:3px 10px; border-radius:12px; font-size:11px; font-weight:bold; background:${estado.fondo}; color:${estado.color};">${estado.texto}</span>
+    </div>
+    <div style="margin-bottom:10px; padding:8px; background:#f9fafb; border-radius:6px; display:grid; grid-template-columns:auto 1fr; gap:2px 8px;">
+      <span style="color:#6b7280;">Remitente real (paso 1):</span><span style="font-weight:bold; color:#b45309;">${remitenteReal}</span>
+      <span style="color:#6b7280;">Asunto:</span><span>${ultimoPaso?.ASUNTO || '—'}</span>
+      <span style="color:#6b7280;">Serie / Subserie:</span><span>${ultimoPaso?.SERIE || '—'} / ${ultimoPaso?.SUBSERIE || '—'}</span>
+      <span style="color:#6b7280;">Medio de envío:</span><span>${sesion.medioEnvio || '—'}</span>
+      <hr style="grid-column:1/-1; border:none; border-top:1px dashed #e5e7eb; margin:2px 0;">
+      <span style="color:#9ca3af; font-size:11px;">Sesión activa:</span><span style="color:#9ca3af; font-size:11px;">${sesion.usuarioSesion} — ${sesion.oficinaSesion}</span>
+    </div>
+    <div style="margin-bottom:10px; overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead><tr style="background:#f3f4f6;">
+          ${['#','Enviado por','Enviado a','Acción','Instrucción','F.Firma','Fecha','PDF'].map(h => `<th style="text-align:left; padding:4px; border-bottom:1px solid #e5e7eb;">${h}</th>`).join('')}
+        </tr></thead>
+        <tbody>
+          ${flujo.map(f => `
+            <tr style="border-bottom:1px solid #f3f4f6;">
+              <td style="padding:4px;">${f.ORDEN}</td>
+              <td style="padding:4px;">${f.FUNCIONARIOCREO || '—'}</td>
+              <td style="padding:4px;">${f.FUNCIONARIOTAREA || '—'}</td>
+              <td style="padding:4px;">${f.ESTADOTAREA || '—'}</td>
+              <td style="padding:4px;">${f.INSTRUCCION || '—'}</td>
+              <td style="padding:4px;">${f.ESTADOFIRMA || '—'}</td>
+              <td style="padding:4px; white-space:nowrap;">${tdParseAspDate(f.FECHA)}</td>
+              <td style="padding:4px; text-align:center;">
+                ${f.NOMBREARCHIVO ? `<button class="td-btn-pdf-fila" data-archivo="${f.NOMBREARCHIVO}" style="border:none; background:none; cursor:pointer; font-size:15px;" title="Descargar versión de este paso">📄</button>` : '—'}
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:6px;">
+      <button id="TD_BtnPreviewPdf" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">👁 Previsualizar última versión</button>
+      <button id="TD_BtnDescargarPdf" style="flex:1; padding:6px; background:#b45309; color:#fff; border:none; border-radius:6px; cursor:pointer;">📄 Descargar última versión</button>
+      <button id="TD_BtnDestinatarios" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer;">👥 Destinatarios/Copias/Adjuntos (${tdAdjuntosCache.length})</button>
+    </div>
+  `;
+
+  contenido.querySelectorAll('.td-btn-pdf-fila').forEach(btn => {
+    btn.onclick = async () => {
+      const url = await tdObtenerPdfBlobUrl(btn.dataset.archivo);
+      if (!url) return alert('Esta versión no tiene PDF asociado.');
+      window.open(url, '_blank');
+    };
+  });
+
+  const abrirUltimaVersion = async (descargar) => {
+    const url = await tdObtenerPdfBlobUrl(ultimoPaso?.NOMBREARCHIVO);
+    if (!url) return alert('No se encontró un PDF válido para la última versión de esta tarea.');
+    if (descargar) {
+      const a = document.createElement('a');
+      a.href = url; a.download = `Tarea_${idTarea}_v${ultimoPaso.ORDEN}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+    } else {
+      window.open(url, '_blank');
+    }
+  };
+  contenido.querySelector('#TD_BtnPreviewPdf').onclick = () => abrirUltimaVersion(false);
+  contenido.querySelector('#TD_BtnDescargarPdf').onclick = () => abrirUltimaVersion(true);
+  contenido.querySelector('#TD_BtnDestinatarios').onclick = () => tdMostrarDestinatarios(idTarea);
+}
+
+async function tdMostrarDestinatarios(idTarea) {
+  const [dest, copiasFunc, copiasEnt] = await Promise.all([
+    tdFetchGet(`${TD_CONFIG.urlDest}?idtareadoc=${idTarea}`).then(r => r.json()),
+    tdFetchGet(`${TD_CONFIG.urlCopiasFun}?idtareadoc=${idTarea}`).then(r => r.json()),
+    tdFetchGet(`${TD_CONFIG.urlCopiasEnt}?idtareadoc=${idTarea}`).then(r => r.json()),
+  ]);
+  const adjuntos = tdAdjuntosCache; // ya lo tenemos del conteo inicial, sin refetch
+
+  document.querySelector('#TD_ModalDest')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'TD_ModalDest';
+  modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.4); z-index:100000; display:flex; align-items:center; justify-content:center;';
+
+  const lista = (titulo, arr) => `
+    <b style="color:#b45309;">${titulo} (${arr.length})</b>
+    ${arr.length === 0 ? '<p style="color:#6b7280;"><i>Sin registros</i></p>' :
+      arr.map(x => `<div style="padding:4px 0; border-bottom:1px solid #f3f4f6;">${x.NOMBRESAPELLIDOS || x.NOMBREARCHIVO || '—'} ${x.CORREO ? `— ${x.CORREO}` : ''}</div>`).join('')}
+  `;
+
+  const listaAdjuntos = (arr) => `
+    <b style="color:#b45309;">Adjuntos (${arr.length})</b>
+    ${arr.length === 0 ? '<p style="color:#6b7280;"><i>Sin registros</i></p>' :
+      arr.map((x, i) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid #f3f4f6;">
+          <span>${x.ARCHIVONOMBRE || x.ARCHIVO || x.NOMBREARCHIVO || '(sin nombre)'}</span>
+          <button class="td-adj-download" data-i="${i}" style="border:none; background:none; cursor:pointer;" title="Descargar">📥</button>
+        </div>`).join('')}
+  `;
+
+  modal.innerHTML = `
+    <div style="background:#fff; border-radius:8px; padding:16px; width:420px; max-height:80vh; overflow-y:auto;">
+      <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+        <b style="color:#b45309;">Destinatarios y copias — Tarea ${idTarea}</b>
+        <button id="TD_CerrarDest" style="background:none; border:none; font-size:16px; cursor:pointer;">✕</button>
+      </div>
+      ${lista('Destinatarios', dest)}
+      ${listaAdjuntos(adjuntos)}
+      ${lista('Copias a funcionarios', copiasFunc)}
+      ${lista('Copias a entidades', copiasEnt)}
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('#TD_CerrarDest').onclick = () => modal.remove();
+
+  modal.querySelectorAll('.td-adj-download').forEach(btn => {
+    btn.onclick = async () => {
+      const adj = adjuntos[parseInt(btn.dataset.i, 10)];
+      const url = await tdObtenerAdjuntoBlobUrl(adj);
+      if (!url) return alert('No se pudo obtener el adjunto. Revisa la consola (F12) para ver por qué.');
+      const a = document.createElement('a');
+      a.href = url; a.download = adj.ARCHIVONOMBRE || adj.ARCHIVO || 'adjunto';
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// ═══ PESTAÑAS DEL CLASIFICADOR ═══
+// Reemplaza el acordeón de secciones: solo una parte del panel está visible
+// a la vez (como pestañas de navegador), para leer sin scroll y sin
+// perderse. Cambia solo la navegación — cada sección hace exactamente lo
+// mismo que antes.
+// ════════════════════════════════════════════════════════════════
+const CD3_TABS = [
+  { clave: 'cargar',       emoji: '🔄', etiqueta: 'Cargar',    titulo: 'Cargar y Clasificar',                         color: '#111827', cuerpoId: '#PCD_CuerpoSec2' },
+  { clave: 'resultados',   emoji: '📊', etiqueta: 'Result.',   titulo: 'Resultados',                                  color: '#2563eb', cuerpoId: '#PCD_CuerpoSec3' },
+  { clave: 'manual',       emoji: '📥', etiqueta: 'Manual',    titulo: 'Reasignación Manual (pegar IDs sueltos)',     color: '#16a34a', cuerpoId: '#PCD_CuerpoSec4' },
+  { clave: 'buscador',     emoji: '🔎', etiqueta: 'Buscar',    titulo: 'Buscar dependencia / funcionario (fuera de tu lista)', color: '#7c3aed', cuerpoId: '#PCD_CuerpoSec5' },
+  { clave: 'tareas',       emoji: '📋', etiqueta: 'Tareas',    titulo: 'Bandeja de Tareas (solo lectura)',            color: '#0891b2', cuerpoId: '#PCD_CuerpoSec6' },
+  { clave: 'detalleTarea', emoji: '🧾', etiqueta: 'Detalle',   titulo: 'Detalle de Tarea (flujo completo por IDTAREADOC)', color: '#b45309', cuerpoId: '#PCD_CuerpoSec7' },
+  { clave: 'comentarios',  emoji: '💬', etiqueta: 'Coment.',   titulo: 'Comentarios de gestión',                      color: '#0d9488', cuerpoId: '#PCD_CuerpoComentarios' },
+  { clave: 'palabras',     emoji: '⚙️', etiqueta: 'Palabras',  titulo: 'Configuración de Palabras Clave',             color: '#6b7280', cuerpoId: '#PCD_CuerpoSec1' },
+];
+let CD3_TAB_ACTIVA = 'cargar';
+
+function cd3CambiarTab(clave) {
+  CD3_TAB_ACTIVA = clave;
+  CD3_TABS.forEach(t => {
+    const cuerpo = document.querySelector(t.cuerpoId);
+    const btn = document.querySelector(`#PCD_Tab_${t.clave}`);
+    const activa = t.clave === clave;
+    if (cuerpo) cuerpo.style.display = activa ? 'block' : 'none';
+    if (btn) {
+      btn.style.background = activa ? t.color : '#e5e7eb';
+      btn.style.color = activa ? '#fff' : '#111827';
+    }
+  });
+  // La bandeja de tareas detecta la sesión solo la primera vez que se entra ahí.
+  if (clave === 'tareas') cd4PrepararCuentaPorDefecto();
+}
+
 function cd3CrearPanel() {
   const existente = document.querySelector('#PanelClasificadorDoc');
   if (existente) existente.remove();
   const cont = document.createElement('div');
   cont.id = 'PanelClasificadorDoc';
-  cont.style.cssText = 'position:fixed; top:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:650px; max-height:88vh; overflow-y:auto; font-family:sans-serif; font-size:13px;';
+  cont.style.cssText = 'position:fixed; top:20px; left:20px; z-index:99999; background:#fff; border:1px solid #ccc; border-radius:10px; padding:14px; box-shadow:0 4px 18px rgba(0,0,0,0.25); width:650px; max-height:92vh; overflow:hidden; display:flex; flex-direction:column; font-family:sans-serif; font-size:13px;';
   cont.style.zoom = CD_ESCALA_UI;
 
   const palabrasHtml = Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `
@@ -2575,7 +3147,7 @@ function cd3CrearPanel() {
   `).join('');
 
   cont.innerHTML = `
-    <div id="PCD_EncabezadoGeneral" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:12px; cursor:grab; user-select:none;">
+    <div id="PCD_EncabezadoGeneral" style="display:flex; justify-content:space-between; align-items:center; font-weight:bold; margin-bottom:10px; cursor:grab; user-select:none; flex-shrink:0;">
       <span>🔍 Clasificador por Competencia</span>
       <div style="display:flex; align-items:center; gap:2px;">
         <button id="PCD_EscalaMenos" title="Reducir tamaño de la interfaz" style="background:none; border:none; font-size:14px; cursor:pointer; padding:2px 4px;">🔍➖</button>
@@ -2585,161 +3157,153 @@ function cd3CrearPanel() {
         <button id="PCD_Cerrar" title="Cerrar" style="background:none; border:none; font-size:16px; cursor:pointer;">✕</button>
       </div>
     </div>
-    <div id="PCD_CuerpoGeneral">
-      <button id="PCD_ExportarBitacora" style="width:100%; margin-bottom:10px; padding:7px; background:#374151; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold;">📥 Exportar registro de acciones <span id="PCD_ContadorBitacora" style="font-weight:normal;">(0)</span></button>
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec1" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec1">▸</span> ⚙️ Configuración de Palabras Clave</span>
+    <button id="PCD_ExportarBitacora" style="width:100%; margin-bottom:8px; padding:6px; background:#374151; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:11px; font-weight:bold; flex-shrink:0;">📥 Exportar registro de acciones <span id="PCD_ContadorBitacora" style="font-weight:normal;">(0)</span></button>
+    <div id="PCD_TabsBar" style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; flex-shrink:0;">
+      ${CD3_TABS.map(t => `<button class="cd3-tab-btn" id="PCD_Tab_${t.clave}" data-tab="${t.clave}" title="${t.titulo}" style="padding:6px 9px; border:none; border-radius:6px; cursor:pointer; font-size:11px; font-weight:bold; background:#e5e7eb; color:#111827; white-space:nowrap;">${t.emoji} ${t.etiqueta}</button>`).join('')}
+    </div>
+    <div id="PCD_CuerpoGeneral" style="flex:1; min-height:0; overflow-y:auto; padding-right:4px;">
+
+      <div id="PCD_CuerpoSec2" style="display:none;">
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">⚡ Documentos simultáneos al reasignar/cerrar en lote</label>
+        <div style="display:flex; align-items:center; gap:8px; margin:4px 0 10px;">
+          <input id="PCD_Concurrencia" type="number" min="1" max="50" value="${CONCURRENCIA_MAXIMA}" style="width:70px; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:12px; text-align:center;">
+          <span style="color:#6b7280; font-size:10px;">Cuántas peticiones al servidor van a la vez (ej: 10 más lento y prudente, 30 más rápido). Aplica a "Reasignar clasificados", Reasignación Manual y el buscador ad-hoc.</span>
         </div>
-        <div id="PCD_CuerpoSec1" style="display:none; padding:10px;">
-          ${palabrasHtml}
-          <label style="color:#6b7280; font-size:11px; font-weight:bold;">🏛️ Palabras clave — Priorizaciones y Control Político</label>
-          <textarea id="PCD_PalabrasPriorizacion" rows="3" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px; box-sizing:border-box;">${CD3_PALABRAS_PRIORIZACION}</textarea>
-          <button id="PCD_GuardarPalabras" style="margin-top:8px; width:100%; padding:7px; background:#374151; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px;">💾 Guardar y Reclasificar</button>
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">👁️ Bandeja a cargar (por defecto, la tuya)</label>
+        <div style="display:flex; gap:6px; margin:4px 0;">
+          <input id="PCD_BandejaBuscarTexto" type="text" placeholder="🌐 Nombre o apellido (toda la entidad)" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <button id="PCD_BandejaBuscarGlobal" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
         </div>
-      </div>
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec2" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec2">▾</span> 🔄 Cargar y Clasificar</span>
-        </div>
-        <div id="PCD_CuerpoSec2" style="display:block; padding:10px;">
-          <label style="color:#6b7280; font-size:11px; font-weight:bold;">👁️ Bandeja a cargar (por defecto, la tuya)</label>
-          <div style="display:flex; gap:6px; margin:4px 0;">
-            <input id="PCD_BandejaBuscarTexto" type="text" placeholder="🌐 Nombre o apellido (toda la entidad)" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
-            <button id="PCD_BandejaBuscarGlobal" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
-          </div>
-          <div style="display:flex; gap:6px; margin:4px 0;">
-            <select id="PCD_BandejaCargo" style="padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
-              ${Object.entries(CD3_BANDEJA_CARGOS).map(([nombre, id]) => `<option value="${id}">${nombre}</option>`).join('')}
-            </select>
-            <button id="PCD_BandejaBuscar" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Listar mi Dirección</button>
-            <button id="PCD_BandejaMia" title="Volver a tu propia bandeja" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">↩ Mi bandeja</button>
-          </div>
-          <input id="PCD_BandejaFiltro" type="text" placeholder="Filtrar los resultados por nombre..." style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin-bottom:4px; font-size:11px; box-sizing:border-box;">
-          <select id="PCD_BandejaFuncionario" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px; box-sizing:border-box;">
-            <option value="0">👤 Mi bandeja (predeterminado)</option>
+        <div style="display:flex; gap:6px; margin:4px 0;">
+          <select id="PCD_BandejaCargo" style="padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            ${Object.entries(CD3_BANDEJA_CARGOS).map(([nombre, id]) => `<option value="${id}">${nombre}</option>`).join('')}
           </select>
-          <div id="PCD_BandejaEstado" style="font-size:11px; color:#6b7280; margin:4px 0 10px;"></div>
-          <button id="PCD_Clasificar" style="width:100%; padding:8px; background:#111827; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🔄 Cargar Documentos Pendientes de la Bandeja</button>
-          <div id="PCD_Estado" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
+          <button id="PCD_BandejaBuscar" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Listar mi Dirección</button>
+          <button id="PCD_BandejaMia" title="Volver a tu propia bandeja" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">↩ Mi bandeja</button>
         </div>
+        <input id="PCD_BandejaFiltro" type="text" placeholder="Filtrar los resultados por nombre..." style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin-bottom:4px; font-size:11px; box-sizing:border-box;">
+        <select id="PCD_BandejaFuncionario" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px; box-sizing:border-box;">
+          <option value="0">👤 Mi bandeja (predeterminado)</option>
+        </select>
+        <div id="PCD_BandejaEstado" style="font-size:11px; color:#6b7280; margin:4px 0 10px;"></div>
+        <button id="PCD_Clasificar" style="width:100%; padding:8px; background:#111827; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🔄 Cargar Documentos Pendientes de la Bandeja</button>
+        <div id="PCD_Estado" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
       </div>
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
-        <div id="PCD_HeaderComentarios" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaComentarios">▸</span> 💬 Comentarios de gestión</span>
+
+      <div id="PCD_CuerpoSec3" style="display:none;">
+        <div style="font-size:12px; font-weight:bold; color:#2563eb; margin-bottom:8px;">📊 Resultados <span id="PCD_ContadorResultados" style="color:#6b7280; font-weight:normal;"></span></div>
+        <div id="PCD_BannerBandeja" style="display:none; background:#fef3c7; border-left:4px solid #d97706; color:#92400e; padding:6px 8px; border-radius:4px; margin-bottom:8px; font-size:11px; font-weight:bold;"></div>
+        <label style="color:#6b7280; font-size:11px;">Filtrar tabla</label>
+        <select id="PCD_FiltroTabla" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+          <option value="todos">📋 Todos</option>
+          <option value="con-prediccion">✅ Con predicción</option>
+          <option value="sin-prediccion">⚠️ Sin predicción</option>
+          <option value="priorizacion">🏛️ Priorizaciones y Control Político</option>
+          <option value="baja-confianza">⚠️ Baja confianza (revisar)</option>
+          ${Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `<option value="${clave}">${sub.emoji} Solo: ${sub.nombre}</option>`).join('')}
+        </select>
+
+        <label style="color:#6b7280; font-size:11px;">Terminación del radicado (además del filtro de arriba)</label>
+        <input id="PCD_FiltroRadicadoTerminacion" type="text" placeholder="ej: 1,2,3 — muestra solo los radicados que terminan en esos dígitos" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+
+        <div id="PCD_TablaResultados" style="max-height:520px; overflow-y:auto;">
+          <div style="color:#9ca3af; font-size:12px; padding:10px 0;">Aún no hay documentos clasificados.</div>
         </div>
-        <div id="PCD_CuerpoComentarios" style="display:none; padding:10px;">
-          <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
-          <select id="PCD_ComentarioReasignacionLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
-            <option value="">— Elegir comentario predefinido —</option>
-            ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
+        <button id="PCD_ReasignarTodo" style="width:100%; margin-top:10px; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar clasificados (respeta el filtro activo)</button>
+        <div id="PCD_EstadoReasignacionMasiva" style="font-size:12px; color:#6b7280; margin-top:6px;"></div>
+      </div>
+
+      <div id="PCD_CuerpoSec4" style="display:none;">
+        <label style="color:#6b7280; font-size:11px;">IDCs o Radicados (uno por línea, o separados por coma)</label>
+        <textarea id="PCD_ManualIds" rows="4" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
+
+        <label style="color:#6b7280; font-size:11px;">Dependencia(s) destino — marca una o varias</label>
+        <div style="margin:4px 0 10px;">
+          ${checkboxesManuales}
+        </div>
+
+        <button id="PCD_ReasignarManual" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a las dependencias marcadas</button>
+        <div id="PCD_EstadoManual" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
+      </div>
+
+      <div id="PCD_CuerpoSec5" style="display:none;">
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">Buscar dependencia, dirección, subdirección u oficina por nombre</label>
+        <div style="display:flex; gap:6px; margin:4px 0 8px;">
+          <input id="PCD_BuscarOficinaTexto" type="text" placeholder="ej: SALUD MENTAL, FINANCIAMIENTO..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <button id="PCD_BuscarOficinaBtn" style="padding:5px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
+        </div>
+        <div id="PCD_ResultadosOficina" style="max-height:180px; overflow-y:auto; margin-bottom:10px;"></div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Destino(s) elegidos (📥 Usar para reasignar) — puedes elegir varios</label>
+          <button id="PCD_DestinosAdHocLimpiar" style="display:none; padding:2px 6px; font-size:10px; background:#fee2e2; color:#991b1b; border:none; border-radius:4px; cursor:pointer;">🗑 Eliminar seleccionados</button>
+        </div>
+        <div id="PCD_DestinosAdHocLista" style="margin:3px 0 8px;"></div>
+        <textarea id="PCD_DestinoAdHocIds" rows="3" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 8px; box-sizing:border-box;" placeholder="IDCs o Radicados a enviar a esos destinos"></textarea>
+        <button id="PCD_ReasignarAdHoc" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a los destinos de arriba</button>
+        <div id="PCD_EstadoAdHoc" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
+      </div>
+
+      <div id="PCD_CuerpoSec6" style="display:none;">
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">Cuenta</label>
+        <div style="display:flex; gap:6px; margin:3px 0 6px;">
+          <input id="PCD_TareasBuscarTexto" type="text" placeholder="🌐 Buscar cuenta por nombre o apellido" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <button id="PCD_TareasBuscarBtn" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
+        </div>
+        <select id="PCD_TareasCuenta" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin-bottom:6px; font-size:11px; box-sizing:border-box;">
+          <option value="">⏳ Detectando tu sesión...</option>
+        </select>
+        <div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:6px;">
+          ${Object.entries(CD4_LISTAS).map(([clave, l]) => `<button class="cd4-btn-lista" data-lista="${clave}" style="padding:5px 9px; background:#e5e7eb; color:#111827; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">${l.etiqueta}</button>`).join('')}
+        </div>
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+          <input id="PCD_TareasFiltro" type="text" placeholder="Filtrar por asunto, radicado, ID, persona..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <select id="PCD_TareasSalida" title="Filtrar por si el documento ya salió (tiene IDC)" style="display:none; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <option value="todas">Todas</option>
+            <option value="salieron">✅ Con IDC (salieron)</option>
+            <option value="pendientes">❌ Sin IDC (aún no salen)</option>
           </select>
-          <textarea id="PCD_ComentarioReasignacion" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_REASIGNACION_DEFAULT}</textarea>
-
-          <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
-          <select id="PCD_ComentarioCierreLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
-            <option value="">— Elegir comentario predefinido —</option>
-            ${CD3_COMENTARIOS_CIERRE.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
-          </select>
-          <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
+          <button id="PCD_TareasExportar" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Excel</button>
         </div>
-      </div>
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec3" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec3">▾</span> 📊 Resultados <span id="PCD_ContadorResultados" style="color:#6b7280; font-weight:normal;"></span></span>
-        </div>
-        <div id="PCD_CuerpoSec3" style="display:block; padding:10px;">
-          <div id="PCD_BannerBandeja" style="display:none; background:#fef3c7; border-left:4px solid #d97706; color:#92400e; padding:6px 8px; border-radius:4px; margin-bottom:8px; font-size:11px; font-weight:bold;"></div>
-          <label style="color:#6b7280; font-size:11px;">Filtrar tabla</label>
-          <select id="PCD_FiltroTabla" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
-            <option value="todos">📋 Todos</option>
-            <option value="con-prediccion">✅ Con predicción</option>
-            <option value="sin-prediccion">⚠️ Sin predicción</option>
-            <option value="priorizacion">🏛️ Priorizaciones y Control Político</option>
-            <option value="baja-confianza">⚠️ Baja confianza (revisar)</option>
-            ${Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `<option value="${clave}">${sub.emoji} Solo: ${sub.nombre}</option>`).join('')}
-          </select>
-
-          <div id="PCD_TablaResultados" style="max-height:280px; overflow-y:auto;">
-            <div style="color:#9ca3af; font-size:12px; padding:10px 0;">Aún no hay documentos clasificados.</div>
-          </div>
-          <button id="PCD_ReasignarTodo" style="width:100%; margin-top:10px; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar clasificados (respeta el filtro activo)</button>
-          <div id="PCD_EstadoReasignacionMasiva" style="font-size:12px; color:#6b7280; margin-top:6px;"></div>
-        </div>
+        <div id="PCD_TareasEstado" style="font-size:11px; color:#6b7280; margin-bottom:6px;">Elige una lista para cargarla.</div>
+        <div id="PCD_TareasTabla" style="max-height:540px; overflow:auto;"></div>
       </div>
 
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-top:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec4" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec4">▸</span> 📥 Reasignación Manual (pegar IDs sueltos)</span>
+      <div id="PCD_CuerpoSec7" style="display:none;">
+        <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">A diferencia de "🔎 Ver Seguimiento" (que usa el IDC), esto busca por <b>IDTAREADOC</b> y muestra <b>todas</b> las versiones del flujo, no solo la última — además de quién es el remitente real y quién tiene la sesión activa.</p>
+        <div style="display:flex; gap:6px; margin-bottom:10px;">
+          <input id="TD_Input" type="text" placeholder="IDTAREADOC (ej: 1494241)" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px;">
+          <button id="TD_Buscar" style="padding:6px 12px; background:#b45309; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Buscar</button>
         </div>
-        <div id="PCD_CuerpoSec4" style="display:none; padding:10px;">
-          <label style="color:#6b7280; font-size:11px;">IDCs o Radicados (uno por línea, o separados por coma)</label>
-          <textarea id="PCD_ManualIds" rows="4" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
-
-          <label style="color:#6b7280; font-size:11px;">Dependencia(s) destino — marca una o varias</label>
-          <div style="margin:4px 0 10px;">
-            ${checkboxesManuales}
-          </div>
-
-          <button id="PCD_ReasignarManual" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a las dependencias marcadas</button>
-          <div id="PCD_EstadoManual" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
-        </div>
+        <div id="TD_Contenido"></div>
       </div>
 
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-top:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec5" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec5">▸</span> 🔎 Buscar dependencia / funcionario (fuera de tu lista)</span>
-        </div>
-        <div id="PCD_CuerpoSec5" style="display:none; padding:10px;">
-          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Buscar dependencia, dirección, subdirección u oficina por nombre</label>
-          <div style="display:flex; gap:6px; margin:4px 0 8px;">
-            <input id="PCD_BuscarOficinaTexto" type="text" placeholder="ej: SALUD MENTAL, FINANCIAMIENTO..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
-            <button id="PCD_BuscarOficinaBtn" style="padding:5px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
-          </div>
-          <div id="PCD_ResultadosOficina" style="max-height:180px; overflow-y:auto; margin-bottom:10px;"></div>
+      <div id="PCD_CuerpoComentarios" style="display:none;">
+        <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
+        <select id="PCD_ComentarioReasignacionLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
+          <option value="">— Elegir comentario predefinido —</option>
+          ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
+        </select>
+        <textarea id="PCD_ComentarioReasignacion" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_REASIGNACION_DEFAULT}</textarea>
 
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-            <label style="color:#6b7280; font-size:11px; font-weight:bold;">Destino(s) elegidos (📥 Usar para reasignar) — puedes elegir varios</label>
-            <button id="PCD_DestinosAdHocLimpiar" style="display:none; padding:2px 6px; font-size:10px; background:#fee2e2; color:#991b1b; border:none; border-radius:4px; cursor:pointer;">🗑 Eliminar seleccionados</button>
-          </div>
-          <div id="PCD_DestinosAdHocLista" style="margin:3px 0 8px;"></div>
-          <textarea id="PCD_DestinoAdHocIds" rows="3" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin:4px 0 8px; box-sizing:border-box;" placeholder="IDCs o Radicados a enviar a esos destinos"></textarea>
-          <button id="PCD_ReasignarAdHoc" style="width:100%; padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar a los destinos de arriba</button>
-          <div id="PCD_EstadoAdHoc" style="margin-top:8px; font-size:12px; color:#6b7280;"></div>
-        </div>
+        <label style="color:#6b7280; font-size:11px;">Comentario de cierre (se usa al cerrar 🗂️ desde este panel)</label>
+        <select id="PCD_ComentarioCierreLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
+          <option value="">— Elegir comentario predefinido —</option>
+          ${CD3_COMENTARIOS_CIERRE.map((c, i) => `<option value="${i}">${cd3TruncarTexto(c.etiqueta, 70)}</option>`).join('')}
+        </select>
+        <textarea id="PCD_ComentarioCierre" rows="2" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">${CD2_COMENTARIO_CIERRE_DEFAULT}</textarea>
       </div>
 
-      <div style="border:1px solid #e5e7eb; border-radius:8px; margin-top:10px; overflow:hidden;">
-        <div id="PCD_HeaderSec6" style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:#f9fafb; cursor:pointer; font-weight:bold;">
-          <span><span id="PCD_FlechaSec6">▸</span> 📋 Bandeja de Tareas (solo lectura)</span>
-        </div>
-        <div id="PCD_CuerpoSec6" style="display:none; padding:10px;">
-          <label style="color:#6b7280; font-size:11px; font-weight:bold;">Cuenta</label>
-          <div style="display:flex; gap:6px; margin:3px 0 6px;">
-            <input id="PCD_TareasBuscarTexto" type="text" placeholder="🌐 Buscar cuenta por nombre o apellido" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
-            <button id="PCD_TareasBuscarBtn" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
-          </div>
-          <select id="PCD_TareasCuenta" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin-bottom:6px; font-size:11px; box-sizing:border-box;">
-            <option value="">⏳ Detectando tu sesión...</option>
-          </select>
-          <div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:6px;">
-            ${Object.entries(CD4_LISTAS).map(([clave, l]) => `<button class="cd4-btn-lista" data-lista="${clave}" style="padding:5px 9px; background:#e5e7eb; color:#111827; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">${l.etiqueta}</button>`).join('')}
-          </div>
-          <div style="display:flex; gap:6px; margin-bottom:6px;">
-            <input id="PCD_TareasFiltro" type="text" placeholder="Filtrar por asunto, radicado, ID, persona..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
-            <select id="PCD_TareasSalida" title="Filtrar por si el documento ya salió (tiene IDC)" style="display:none; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
-              <option value="todas">Todas</option>
-              <option value="salieron">✅ Con IDC (salieron)</option>
-              <option value="pendientes">❌ Sin IDC (aún no salen)</option>
-            </select>
-            <button id="PCD_TareasExportar" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Excel</button>
-          </div>
-          <div id="PCD_TareasEstado" style="font-size:11px; color:#6b7280; margin-bottom:6px;">Elige una lista para cargarla.</div>
-          <div id="PCD_TareasTabla" style="max-height:340px; overflow:auto;"></div>
-        </div>
+      <div id="PCD_CuerpoSec1" style="display:none;">
+        ${palabrasHtml}
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">🏛️ Palabras clave — Priorizaciones y Control Político</label>
+        <textarea id="PCD_PalabrasPriorizacion" rows="3" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px; box-sizing:border-box;">${CD3_PALABRAS_PRIORIZACION}</textarea>
+        <button id="PCD_GuardarPalabras" style="margin-top:8px; width:100%; padding:7px; background:#374151; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px;">💾 Guardar y Reclasificar</button>
       </div>
+
     </div>
   `;
+
   document.body.appendChild(cont);
   cd3HabilitarArrastre(cont, document.querySelector('#PCD_EncabezadoGeneral'));
 
@@ -2755,27 +3319,30 @@ function cd3CrearPanel() {
 
   let minimizadoTodo = false;
   const btnMinTodo = document.querySelector('#PCD_MinimizarTodo');
-  const cuerpoGeneral = document.querySelector('#PCD_CuerpoGeneral');
   btnMinTodo.addEventListener('mousedown', (e) => e.stopPropagation());
   btnMinTodo.onclick = () => {
-    minimizadoTodo = !minimizadoTodo;
-    cuerpoGeneral.style.display = minimizadoTodo ? 'none' : 'block';
-    cont.style.width = minimizadoTodo ? '300px' : '650px';
-    btnMinTodo.textContent = minimizadoTodo ? '🔼' : '➖';
+    minimizadoTodo = true;
+    cont.style.display = 'none';
+    cdCrearBurbujaMinimizada({
+      contenedor: cont, emoji: '🔍', colorFondo: 'linear-gradient(135deg, #a78bfa, #f472b6)', id: 'PCD_Burbuja',
+      alRestaurar: () => { minimizadoTodo = false; cont.style.display = 'flex'; },
+    });
   };
 
-  document.querySelector('#PCD_HeaderSec1').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec1', '#PCD_FlechaSec1');
-  document.querySelector('#PCD_HeaderSec2').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec2', '#PCD_FlechaSec2');
-  document.querySelector('#PCD_HeaderComentarios').onclick = () => cd3ToggleSeccion('#PCD_CuerpoComentarios', '#PCD_FlechaComentarios');
-  document.querySelector('#PCD_HeaderSec3').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec3', '#PCD_FlechaSec3');
-  document.querySelector('#PCD_HeaderSec4').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec4', '#PCD_FlechaSec4');
-  document.querySelector('#PCD_HeaderSec5').onclick = () => cd3ToggleSeccion('#PCD_CuerpoSec5', '#PCD_FlechaSec5');
-  document.querySelector('#PCD_HeaderSec6').onclick = () => { cd3ToggleSeccion('#PCD_CuerpoSec6', '#PCD_FlechaSec6'); cd4PrepararCuentaPorDefecto(); };
+  document.querySelectorAll('.cd3-tab-btn').forEach(btn => { btn.onclick = () => cd3CambiarTab(btn.dataset.tab); });
+  cd3CambiarTab(CD3_TAB_ACTIVA);
+  document.querySelector('#TD_Buscar').onclick = tdEjecutarBusqueda;
+  document.querySelector('#TD_Input').addEventListener('keydown', (e) => { if (e.key === 'Enter') tdEjecutarBusqueda(); });
 
   document.querySelector('#PCD_Clasificar').onclick = cd3EjecutarClasificacion;
 
   document.querySelector('#PCD_BandejaBuscar').onclick = cd3BuscarFuncionariosBandejaUI;
   document.querySelector('#PCD_BandejaBuscarGlobal').onclick = cd3BuscarFuncionariosGlobalUI;
+  document.querySelector('#PCD_Concurrencia').addEventListener('change', (e) => {
+    const n = Math.min(50, Math.max(1, Number(e.target.value) || 1));
+    CONCURRENCIA_MAXIMA = n;
+    e.target.value = n;
+  });
   document.querySelector('#PCD_BandejaBuscarTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarFuncionariosGlobalUI(); });
   document.querySelector('#PCD_BandejaFiltro').addEventListener('input', cd3PintarListaFuncionariosBandeja);
   document.querySelector('#PCD_BandejaFuncionario').onchange = (e) => cd3ElegirBandeja(Number(e.target.value));
@@ -2788,6 +3355,7 @@ function cd3CrearPanel() {
     CD3_FILTRO_ACTUAL = e.target.value;
     cd3RenderizarResultados();
   };
+  document.querySelector('#PCD_FiltroRadicadoTerminacion').addEventListener('input', cd3RenderizarResultados);
 
   document.querySelector('#PCD_GuardarPalabras').onclick = () => {
     document.querySelectorAll('.cd3-palabras').forEach(ta => { CD3_SUBDIRECCIONES[ta.dataset.clave].palabras = ta.value; });
@@ -2843,12 +3411,11 @@ function cd3HabilitarArrastre(contenedor, agarre) {
   });
   document.addEventListener('mousemove', (e) => {
     if (!arrastrando) return;
-    // No dejar que ningún borde del panel salga de la ventana visible.
-    const maxX = Math.max(0, window.innerWidth - contenedor.offsetWidth);
-    const maxY = Math.max(0, window.innerHeight - contenedor.offsetHeight);
-    const x = Math.min(Math.max(e.clientX - offsetX, 0), maxX);
-    const y = Math.min(Math.max(e.clientY - offsetY, 0), maxY);
-    contenedor.style.left = x + 'px'; contenedor.style.top = y + 'px';
+    // Solo se limita el borde superior (no puede quedar por encima de la
+    // ventana, donde perderías el agarre); por izquierda, derecha y abajo sí
+    // puede salir, como pediste.
+    const y = Math.max(e.clientY - offsetY, 0);
+    contenedor.style.left = (e.clientX - offsetX) + 'px'; contenedor.style.top = y + 'px';
   });
   document.addEventListener('mouseup', () => { arrastrando = false; });
 }
