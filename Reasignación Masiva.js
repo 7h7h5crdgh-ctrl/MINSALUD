@@ -31,7 +31,7 @@ const CONFIG_DEPENDENCIAS = {
   },
   noTransmisibles: {
     nombre: 'Enfermedades No Transmisibles', idOficina: 45, color: '#7c3aed', emoji: '❤️',
-    palabras: 'EMPAQUES Y ETIQUETAS, EMPAQUES, ETIQUETAS, ETIQUETA, EMPAQUE, ONCOLOGICO, ONCOLÓGICO, TAMIZAJE, CANCER, CÁNCER, DIABETES, HIPERTENSION, HIPERTENSIÓN, OBESIDAD, TABACO, NICOTINA, VAPEADORES, VAPEADOR, ENFERMEDADES CRONICAS, ENFERMEDADES CRÓNICAS, ENFERMEDADES HUERFANAS, ENFERMEDADES HUÉRFANAS, ENFERMEDADES RARAS, ETIQUETADO, EMPAQUETADO, CIGARRILOS, CIGARRILLO, BUCAL, SALUD BUCAL, SALUD VISUAL, ASMA, CIGARRILLO ELECTRICO, CIGARRILLO ELÉCTRICO, ALIMENTACIÓN SALUDABLE, ALIMENTACION SALUDABLE',
+    palabras: 'ONCOLOGICO, ONCOLÓGICO, TAMIZAJE, CANCER, CÁNCER, DIABETES, HIPERTENSION, HIPERTENSIÓN, OBESIDAD, TABACO, NICOTINA, VAPEADORES, VAPEADOR, ENFERMEDADES CRONICAS, ENFERMEDADES CRÓNICAS, ENFERMEDADES HUERFANAS, ENFERMEDADES HUÉRFANAS, ENFERMEDADES RARAS, ETIQUETADO, EMPAQUETADO, CIGARRILOS, CIGARRILLO, BUCAL, SALUD BUCAL, SALUD VISUAL, ASMA, CIGARRILLO ELECTRICO, CIGARRILLO ELÉCTRICO, ALIMENTACIÓN SALUDABLE, ALIMENTACION SALUDABLE',
   },
   saludAmbiental: {
     nombre: 'Salud Ambiental y Cambio Climático', idOficina: 49, color: '#059669', emoji: '🌱',
@@ -2007,9 +2007,12 @@ async function cd3ReasignarTodosLosClasificados() {
   pendientes.forEach(d => { if (!grupos[d.manual]) grupos[d.manual] = []; grupos[d.manual].push(d); });
   const resumen = Object.entries(grupos).map(([clave, docs]) => `${CD3_SUBDIRECCIONES[clave].nombre}: ${docs.length} documento(s)`).join('\n');
   const etiquetaFiltro = CD3_FILTRO_ACTUAL === 'todos' ? 'todos los clasificados' : `el filtro activo`;
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+  const comentarioPorDefecto = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
 
-  if (!confirm(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\nComentario: "${comentario}"\n\n¿Confirmas?`)) return;
+  const comentarioEditado = prompt(`Se reasignarán ${pendientes.length} documento(s) dentro de ${etiquetaFiltro}:\n\n${resumen}\n\nPuedes editar el comentario antes de confirmar:`, comentarioPorDefecto);
+  if (comentarioEditado === null) return; // canceló
+  const comentario = comentarioEditado.trim();
+  if (!comentario) return alert('El comentario no puede quedar vacío.');
   const estado = document.querySelector('#PCD_EstadoReasignacionMasiva');
 
   const textoOriginal = btn.textContent;
@@ -2059,7 +2062,7 @@ async function cd3ReasignarTodosLosClasificados() {
 // ── Reasignación manual: pegar IDCs sueltos + marcar 1 o varias dependencias ──
 async function cd3ReasignarManualMultiple() {
   const idsRaw = document.querySelector('#PCD_ManualIds').value.trim();
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+  const comentarioPorDefecto = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
   const estado = document.querySelector('#PCD_EstadoManual');
   const btn = document.querySelector('#PCD_ReasignarManual');
 
@@ -2070,7 +2073,10 @@ async function cd3ReasignarManualMultiple() {
   if (!clavesSeleccionadas.length) return alert('Marca al menos una dependencia destino.');
 
   const nombresDestinos = clavesSeleccionadas.map(c => CD2_SUBDIRECCIONES[c].nombre).join(' + ');
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nComentario: "${comentario}"\n\nDocumentos: ${lista.join(', ')}`)) return;
+  const comentarioEditado = prompt(`Reasignar ${lista.length} documento(s) a:\n\n${nombresDestinos}\n\nDocumentos: ${lista.join(', ')}\n\nPuedes editar el comentario antes de confirmar:`, comentarioPorDefecto);
+  if (comentarioEditado === null) return; // canceló
+  const comentario = comentarioEditado.trim();
+  if (!comentario) return alert('El comentario no puede quedar vacío.');
 
   const textoOriginal = btn.textContent;
   estado.textContent = `⏳ Procesando 0/${lista.length}... (${CONCURRENCIA_MAXIMA} a la vez)`;
@@ -2202,11 +2208,14 @@ async function cd3ReasignarAdHoc() {
   if (!CD3_DESTINOS_ADHOC.length) return alert('Primero busca una dependencia arriba y pulsa "📥 Usar para reasignar" (puedes elegir varias).');
   if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado.');
   const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-  const comentario = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
+  const comentarioPorDefecto = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
   const destinos = CD3_DESTINOS_ADHOC.slice();
   const nombreDestinos = destinos.map(d => d.nombre).join(' + ');
 
-  if (!confirm(`¿Confirmas reasignar ${lista.length} documento(s) a:\n\n${nombreDestinos}\n\n(fuera de tu lista configurada)\n\nComentario: "${comentario}"\n\nDocumentos: ${lista.join(', ')}`)) return;
+  const comentarioEditado = prompt(`Reasignar ${lista.length} documento(s) a:\n\n${nombreDestinos}\n\n(fuera de tu lista configurada)\n\nDocumentos: ${lista.join(', ')}\n\nPuedes editar el comentario antes de confirmar:`, comentarioPorDefecto);
+  if (comentarioEditado === null) return; // canceló
+  const comentario = comentarioEditado.trim();
+  if (!comentario) return alert('El comentario no puede quedar vacío.');
 
   const textoOriginal = btn.textContent;
   btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'not-allowed';
