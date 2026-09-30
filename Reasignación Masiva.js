@@ -1733,15 +1733,9 @@ function cd3RenderizarFlujoCompacto(paso) {
   `;
 }
 
-function cd3RenderizarResultados() {
-  const cont = document.querySelector('#PCD_TablaResultados');
-  const contador = document.querySelector('#PCD_ContadorResultados');
-  if (!CD3_DOCUMENTOS.length) {
-    cont.innerHTML = '<div style="color:#9ca3af; font-size:12px; padding:10px 0;">Aún no hay documentos clasificados.</div>';
-    contador.textContent = '';
-    return;
-  }
-
+// Aplica el filtro de categoría + terminación de radicado. La usan tanto el
+// render de las tarjetas como el botón de "copiar los primeros N IDC".
+function cd3ObtenerFiltrados() {
   let documentosFiltrados = CD3_DOCUMENTOS;
   if (CD3_FILTRO_ACTUAL === 'con-prediccion') documentosFiltrados = CD3_DOCUMENTOS.filter(d => !!d.manual);
   else if (CD3_FILTRO_ACTUAL === 'sin-prediccion') documentosFiltrados = CD3_DOCUMENTOS.filter(d => !d.manual);
@@ -1756,6 +1750,33 @@ function cd3RenderizarResultados() {
   if (terminaciones.length) {
     documentosFiltrados = documentosFiltrados.filter(d => terminaciones.some(t => String(d.radicado || '').endsWith(t)));
   }
+  return documentosFiltrados;
+}
+
+// Copia los primeros N IDC de la vista filtrada actual (cualquiera que sea el
+// filtro activo), uno por línea — listos para pegar en "⬇️ Descargas".
+function cd3CopiarPrimerosIdc(n) {
+  const estado = document.querySelector('#PCD_CopiarPrimerosEstado');
+  const filtrados = cd3ObtenerFiltrados();
+  if (!filtrados.length) { estado.textContent = 'No hay documentos en la vista filtrada actual.'; estado.style.color = '#dc2626'; return; }
+  const tomados = filtrados.slice(0, n);
+  cdCopiarTexto(tomados.map(d => d.idc).join('\n'));
+  estado.style.color = '#16a34a';
+  estado.textContent = tomados.length < n
+    ? `✅ Copiados ${tomados.length} IDC (la vista filtrada solo tenía ${tomados.length}).`
+    : `✅ Copiados los primeros ${tomados.length} IDC de la vista filtrada.`;
+}
+
+function cd3RenderizarResultados() {
+  const cont = document.querySelector('#PCD_TablaResultados');
+  const contador = document.querySelector('#PCD_ContadorResultados');
+  if (!CD3_DOCUMENTOS.length) {
+    cont.innerHTML = '<div style="color:#9ca3af; font-size:12px; padding:10px 0;">Aún no hay documentos clasificados.</div>';
+    contador.textContent = '';
+    return;
+  }
+
+  const documentosFiltrados = cd3ObtenerFiltrados();
 
   contador.textContent = `(${documentosFiltrados.length} de ${CD3_DOCUMENTOS.length})`;
 
@@ -1903,11 +1924,15 @@ function cd3RenderizarResultados() {
   });
 
   cont.querySelectorAll('.cd3-btn-preview').forEach(btn => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const idx = Number(btn.dataset.idx);
       CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
       const doc = CD3_DOCUMENTOS[idx];
-      cdPrevisualizarPdf(doc.idc);
+      const original = btn.textContent;
+      btn.textContent = '⏳ Abriendo…'; btn.disabled = true;
+      try { await cdPrevisualizarPdf(doc.idc); }
+      catch (e) { alert('No se pudo previsualizar el PDF: ' + e.message); }
+      finally { btn.textContent = original; btn.disabled = false; }
     };
   });
 
@@ -1924,11 +1949,15 @@ function cd3RenderizarResultados() {
   });
 
   cont.querySelectorAll('.cd3-btn-adjuntos').forEach(btn => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const idx = Number(btn.dataset.idx);
       CD3_FILA_SELECCIONADA = idx; cd3AplicarResaltado();
       const doc = CD3_DOCUMENTOS[idx];
-      cdDescargarAdjuntos(doc.idc);
+      const original = btn.textContent;
+      btn.textContent = '⏳ Descargando…'; btn.disabled = true;
+      try { await cdDescargarAdjuntos(doc.idc); }
+      catch (e) { alert('No se pudieron descargar los adjuntos: ' + e.message); }
+      finally { btn.textContent = original; btn.disabled = false; }
     };
   });
 
@@ -2093,6 +2122,7 @@ async function cd3ReasignarManualMultiple() {
   btn.style.cursor = 'pointer';
   btn.textContent = textoOriginal;
   estado.textContent = `✅ ${resultados.exitosos.length} exitosos, ❌ ${resultados.fallidos.length} fallidos. Revisa la consola para detalle.`;
+  document.querySelector('#PCD_ManualIds').value = '';
 }
 
 function cd3ToggleSeccion(idCuerpo, idFlecha) {
@@ -2236,6 +2266,7 @@ async function cd3ReasignarAdHoc() {
 
   btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer'; btn.textContent = textoOriginal;
   estado.textContent = `✅ ${exitosos} exitosos, ❌ ${fallidos} fallidos. Revisa la consola para detalle.`;
+  document.querySelector('#PCD_DestinoAdHocIds').value = '';
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -3105,6 +3136,108 @@ async function tdMostrarDestinatarios(idTarea) {
 // perderse. Cambia solo la navegación — cada sección hace exactamente lo
 // mismo que antes.
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// ═══ DESCARGA MASIVA (PDF, adjuntos, o ambos, para varios IDC) ═══
+// Reutiliza cd4CrearZip/cd4DescargarBlob (genéricas) y la misma lógica de
+// "no descomprimir el zip de adjuntos" de cd3DescargarPdfYAdjuntosZip: cada
+// adjuntos-zip que ya arma ControlDoc se incluye tal cual, como un archivo
+// más, dentro del zip final — nunca se decodifica su contenido.
+// ════════════════════════════════════════════════════════════════
+const CD5_CONCURRENCIA_DESCARGAS = 5;
+
+async function cd5ObtenerPdfBytes(idDocumento) {
+  const url = await cdObtenerPdfBlobUrl(idDocumento);
+  if (!url) return null;
+  try {
+    return new Uint8Array(await (await fetch(url)).arrayBuffer());
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function cd5ObtenerAdjuntosZipBytes(idDocumento) {
+  try {
+    const resp = await cdFetchPost(CD_CONFIG.urlGuardarZip, { IDDOCUMENTO: idDocumento, DILIGENCIADOS: 'NO' });
+    const data = await resp.json();
+    if (!(data && data.RESPUESTA === true && data.VALORESPUESTA)) return null;
+    const valor = data.VALORESPUESTA;
+    if (typeof valor === 'string' && valor.startsWith('http')) {
+      const r2 = await fetch(valor, { credentials: 'same-origin' });
+      if (!r2.ok) return null;
+      return new Uint8Array(await (await r2.blob()).arrayBuffer());
+    }
+    if (typeof valor === 'string') {
+      try {
+        const bin = atob(cdSanitizarBase64(valor));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      } catch (e) { return null; }
+    }
+  } catch (e) {
+    console.warn('[CD5] No se pudo obtener el zip de adjuntos de', idDocumento, ':', e.message);
+  }
+  return null;
+}
+
+// Trae la lista de IDCs del cuadro de texto de la pestaña, sin duplicados.
+function cd5ListaIds() {
+  const texto = document.querySelector('#PCD_DescargasIds').value.trim();
+  return [...new Set(texto.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean))];
+}
+
+// Copia al cuadro de texto los IDC que ya están cargados en "📊 Result."
+// (respeta el filtro activo ahí, incluida la terminación de radicado).
+function cd5CargarDesdeResultados() {
+  if (!CD3_DOCUMENTOS.length) return alert('Aún no has cargado documentos en la pestaña "📊 Result." — ve ahí primero y pulsa "Cargar Documentos Pendientes".');
+  document.querySelector('#PCD_DescargasIds').value = CD3_DOCUMENTOS.map(d => d.idc).join('\n');
+  document.querySelector('#PCD_DescargasEstado').textContent = `${CD3_DOCUMENTOS.length} IDC copiados desde Resultados.`;
+}
+
+// modo: 'pdf' | 'adjuntos' | 'ambos'
+async function cd5DescargarMasivo(modo) {
+  const lista = cd5ListaIds();
+  const estado = document.querySelector('#PCD_DescargasEstado');
+  if (!lista.length) return alert('Pega al menos un IDC, o usa "📥 Cargar desde Resultados".');
+
+  const botones = document.querySelectorAll('.cd5-btn-descarga');
+  botones.forEach(b => { b.disabled = true; b.style.opacity = '0.6'; b.style.cursor = 'not-allowed'; });
+  estado.textContent = `⏳ Procesando 0/${lista.length}...`;
+
+  const archivos = [];
+  const sinPdf = [], sinAdjuntos = [];
+  await ejecutarConPool(lista, CD5_CONCURRENCIA_DESCARGAS, async (idcRaw) => {
+    const idc = idcRaw.trim();
+    if (modo === 'pdf' || modo === 'ambos') {
+      const bytes = await cd5ObtenerPdfBytes(idc).catch(() => null);
+      if (bytes) archivos.push({ nombre: `Documento_${idc}.pdf`, bytes });
+      else sinPdf.push(idc);
+    }
+    if (modo === 'adjuntos' || modo === 'ambos') {
+      const bytes = await cd5ObtenerAdjuntosZipBytes(idc);
+      if (bytes) archivos.push({ nombre: `Adjuntos_${idc}.zip`, bytes });
+      else sinAdjuntos.push(idc);
+    }
+  }, (completados, total) => { estado.textContent = `⏳ Procesando ${completados}/${total}...`; });
+
+  botones.forEach(b => { b.disabled = false; b.style.opacity = '1'; b.style.cursor = 'pointer'; });
+
+  if (!archivos.length) {
+    estado.textContent = '❌ No se pudo obtener ningún archivo (revisa la consola con F12 para el detalle).';
+    return;
+  }
+
+  estado.textContent = '⏳ Armando el ZIP...';
+  const nombreZip = modo === 'pdf' ? 'PDFs' : modo === 'adjuntos' ? 'Adjuntos' : 'PDF_y_Adjuntos';
+  cd4DescargarBlob(cd4CrearZip(archivos), `${nombreZip}_masivo_${new Date().toISOString().slice(0, 10)}.zip`);
+
+  const avisos = [];
+  if (sinPdf.length) avisos.push(`sin PDF: ${sinPdf.join(', ')}`);
+  if (sinAdjuntos.length) avisos.push(`sin adjuntos (o no se pudieron obtener): ${sinAdjuntos.join(', ')}`);
+  estado.textContent = `✅ ZIP descargado con ${archivos.length} archivo(s) de ${lista.length} IDC.` + (avisos.length ? ` ⚠️ ${avisos.join(' · ')}` : '');
+}
+
+
 const CD3_TABS = [
   { clave: 'cargar',       emoji: '🔄', etiqueta: 'Cargar',    titulo: 'Cargar y Clasificar',                         color: '#111827', cuerpoId: '#PCD_CuerpoSec2' },
   { clave: 'resultados',   emoji: '📊', etiqueta: 'Result.',   titulo: 'Resultados',                                  color: '#2563eb', cuerpoId: '#PCD_CuerpoSec3' },
@@ -3114,6 +3247,7 @@ const CD3_TABS = [
   { clave: 'detalleTarea', emoji: '🧾', etiqueta: 'Detalle',   titulo: 'Detalle de Tarea (flujo completo por IDTAREADOC)', color: '#b45309', cuerpoId: '#PCD_CuerpoSec7' },
   { clave: 'comentarios',  emoji: '💬', etiqueta: 'Coment.',   titulo: 'Comentarios de gestión',                      color: '#0d9488', cuerpoId: '#PCD_CuerpoComentarios' },
   { clave: 'palabras',     emoji: '⚙️', etiqueta: 'Palabras',  titulo: 'Configuración de Palabras Clave',             color: '#6b7280', cuerpoId: '#PCD_CuerpoSec1' },
+  { clave: 'descargas',    emoji: '⬇️', etiqueta: 'Descargas', titulo: 'Descarga masiva (PDF, adjuntos, o ambos)',    color: '#be123c', cuerpoId: '#PCD_CuerpoSec8' },
 ];
 let CD3_TAB_ACTIVA = 'cargar';
 
@@ -3215,6 +3349,17 @@ function cd3CrearPanel() {
         <label style="color:#6b7280; font-size:11px;">Terminación del radicado (además del filtro de arriba)</label>
         <input id="PCD_FiltroRadicadoTerminacion" type="text" placeholder="ej: 1,2,3 — muestra solo los radicados que terminan en esos dígitos" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
 
+        <label style="color:#6b7280; font-size:11px;">📋 Copiar los primeros N IDC de la vista filtrada de arriba (para pegar en "⬇️ Descargas")</label>
+        <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin:3px 0 4px;">
+          <button class="cd3-btn-copiar-primeros" data-n="5" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">5</button>
+          <button class="cd3-btn-copiar-primeros" data-n="10" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">10</button>
+          <button class="cd3-btn-copiar-primeros" data-n="20" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">20</button>
+          <button class="cd3-btn-copiar-primeros" data-n="25" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">25</button>
+          <input id="PCD_CopiarPrimerosN" type="number" min="1" placeholder="Otro #" style="width:65px; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <button id="PCD_CopiarPrimerosBtn" style="padding:4px 10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">📋 Copiar</button>
+        </div>
+        <div id="PCD_CopiarPrimerosEstado" style="font-size:11px; margin-bottom:8px;"></div>
+
         <div id="PCD_TablaResultados" style="max-height:520px; overflow-y:auto;">
           <div style="color:#9ca3af; font-size:12px; padding:10px 0;">Aún no hay documentos clasificados.</div>
         </div>
@@ -3287,6 +3432,20 @@ function cd3CrearPanel() {
         <div id="TD_Contenido"></div>
       </div>
 
+      <div id="PCD_CuerpoSec8" style="display:none;">
+        <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">Pega uno o varios IDC (uno por línea o separados por coma). Cada botón arma <b>un solo .zip</b> para descargar de una vez.</p>
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+          <button id="PCD_DescargasCargarResultados" style="padding:5px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Cargar desde Resultados</button>
+        </div>
+        <textarea id="PCD_DescargasIds" rows="5" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin-bottom:10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <button data-modo="pdf" class="cd5-btn-descarga" style="padding:9px; background:#e0e7ff; color:#3730a3; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📄 Solo PDF (un .zip con un PDF por documento)</button>
+          <button data-modo="adjuntos" class="cd5-btn-descarga" style="padding:9px; background:#dbeafe; color:#1e3a8a; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📎 Solo Adjuntos (un .zip con los adjuntos de cada documento)</button>
+          <button data-modo="ambos" class="cd5-btn-descarga" style="padding:9px; background:#be123c; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📦 PDF + Adjuntos juntos (todo en un solo .zip)</button>
+        </div>
+        <div id="PCD_DescargasEstado" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
+      </div>
+
       <div id="PCD_CuerpoComentarios" style="display:none;">
         <label style="color:#6b7280; font-size:11px;">Comentario del trámite (se usa al reasignar desde este panel)</label>
         <select id="PCD_ComentarioReasignacionLista" style="width:100%; padding:4px; border:1px solid #ccc; border-radius:4px; margin:3px 0; font-size:11px; box-sizing:border-box;">
@@ -3339,6 +3498,8 @@ function cd3CrearPanel() {
   };
 
   document.querySelectorAll('.cd3-tab-btn').forEach(btn => { btn.onclick = () => cd3CambiarTab(btn.dataset.tab); });
+  document.querySelector('#PCD_DescargasCargarResultados').onclick = cd5CargarDesdeResultados;
+  document.querySelectorAll('.cd5-btn-descarga').forEach(btn => { btn.onclick = () => cd5DescargarMasivo(btn.dataset.modo); });
   cd3CambiarTab(CD3_TAB_ACTIVA);
   document.querySelector('#TD_Buscar').onclick = tdEjecutarBusqueda;
   document.querySelector('#TD_Input').addEventListener('keydown', (e) => { if (e.key === 'Enter') tdEjecutarBusqueda(); });
@@ -3365,6 +3526,12 @@ function cd3CrearPanel() {
     cd3RenderizarResultados();
   };
   document.querySelector('#PCD_FiltroRadicadoTerminacion').addEventListener('input', cd3RenderizarResultados);
+  document.querySelectorAll('.cd3-btn-copiar-primeros').forEach(btn => { btn.onclick = () => cd3CopiarPrimerosIdc(Number(btn.dataset.n)); });
+  document.querySelector('#PCD_CopiarPrimerosBtn').onclick = () => {
+    const n = Number(document.querySelector('#PCD_CopiarPrimerosN').value);
+    if (!n || n < 1) return alert('Escribe un número mayor a 0 en "Otro #".');
+    cd3CopiarPrimerosIdc(n);
+  };
 
   document.querySelector('#PCD_GuardarPalabras').onclick = () => {
     document.querySelectorAll('.cd3-palabras').forEach(ta => { CD3_SUBDIRECCIONES[ta.dataset.clave].palabras = ta.value; });
