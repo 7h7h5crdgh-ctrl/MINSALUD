@@ -3238,6 +3238,151 @@ async function cd5DescargarMasivo(modo) {
 }
 
 
+// ════════════════════════════════════════════════════════════════
+// ═══ DESCARGAS → subpestaña "Por IDTAREADOC" (última versión PDF) ═══
+// Reutiliza tdConsultarTarea / tdObtenerPdfBlobUrl (ya usadas en "🧾 Detalle")
+// y cd4CrearZip / cd4DescargarBlob (genéricas): para cada IDTAREADOC busca el
+// paso más reciente del flujo que tenga PDF diligenciado y lo descarga. Solo
+// lectura: no modifica ninguna tarea.
+// ════════════════════════════════════════════════════════════════
+let CD6_RESULTADOS = [];   // { id, estado, orden, totalPasos, asunto, nombre, bytes, error }
+let CD6_EN_CURSO = false;
+
+async function cd6ObtenerUltimaVersion(idTarea) {
+  const { flujo } = await tdConsultarTarea(idTarea);
+  if (!flujo.length) throw new Error('Sin flujo (ID inexistente o sin permisos)');
+  const ordenado = [...flujo].sort((a, b) => (Number(a.ORDEN) || 0) - (Number(b.ORDEN) || 0));
+  const ultimo = ordenado[ordenado.length - 1];
+  // Toma el paso más reciente que sí tenga PDF (el último paso puede no tenerlo).
+  const conPdf = [...ordenado].reverse().find(p => p.NOMBREARCHIVO);
+  if (!conPdf) throw new Error('Ningún paso del flujo tiene PDF');
+  return { paso: conPdf, totalPasos: ordenado.length, asunto: ultimo.ASUNTO || '' };
+}
+
+async function cd6ProcesarTarea(r) {
+  r.estado = 'procesando'; r.error = ''; cd6PintarTabla();
+  try {
+    const { paso, totalPasos, asunto } = await cd6ObtenerUltimaVersion(r.id);
+    r.orden = paso.ORDEN; r.totalPasos = totalPasos; r.asunto = asunto;
+    const blobUrl = await tdObtenerPdfBlobUrl(paso.NOMBREARCHIVO);
+    if (!blobUrl) throw new Error('El servidor no devolvió el PDF de esa versión');
+    r.bytes = new Uint8Array(await (await fetch(blobUrl)).arrayBuffer());
+    URL.revokeObjectURL(blobUrl);
+    r.nombre = `Tarea_${r.id}_v${paso.ORDEN}.pdf`;
+    r.estado = 'ok';
+  } catch (e) {
+    r.estado = 'error'; r.error = e.message; r.bytes = null;
+    console.warn('[CD6]', r.id, e);
+  }
+  cd6PintarTabla();
+}
+
+function cd6ParsearIds(texto) {
+  return [...new Set(texto.split(/[\s,;]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s)))];
+}
+
+function cd6Estado(t) { const el = document.querySelector('#PCD_TdmEstado'); if (el) el.textContent = t; }
+
+function cd6Botones(activos) {
+  ['#PCD_TdmEjecutar', '#PCD_TdmReintentar'].forEach(s => {
+    const b = document.querySelector(s); if (!b) return;
+    b.disabled = !activos; b.style.opacity = activos ? '1' : '0.6'; b.style.cursor = activos ? 'pointer' : 'not-allowed';
+  });
+}
+
+async function cd6Entregar(modo) {
+  const listos = CD6_RESULTADOS.filter(r => r.estado === 'ok' && r.bytes);
+  if (!listos.length) return;
+  if (modo === 'zip' && listos.length > 1) {
+    cd6Estado('⏳ Armando el ZIP…');
+    const archivos = listos.map(r => ({ nombre: r.nombre, bytes: r.bytes }));
+    const f = new Date(), p = n => String(n).padStart(2, '0');
+    cd4DescargarBlob(cd4CrearZip(archivos), `UltimasVersiones_Tareas_${f.getFullYear()}${p(f.getMonth() + 1)}${p(f.getDate())}_${p(f.getHours())}${p(f.getMinutes())}.zip`);
+  } else {
+    for (const r of listos) {
+      cd4DescargarBlob(new Blob([r.bytes], { type: 'application/pdf' }), r.nombre);
+      await new Promise(res => setTimeout(res, 500));
+    }
+  }
+}
+
+async function cd6Ejecutar(soloFallidos = false) {
+  if (CD6_EN_CURSO) return;
+  let objetivo;
+  if (soloFallidos) {
+    objetivo = CD6_RESULTADOS.filter(r => r.estado === 'error');
+    if (!objetivo.length) return cd6Estado('No hay tareas fallidas para reintentar.');
+  } else {
+    const ids = cd6ParsearIds(document.querySelector('#PCD_TdmIds').value);
+    if (!ids.length) return cd6Estado('Pega al menos un IDTAREADOC válido (solo números).');
+    CD6_RESULTADOS = ids.map(id => ({ id, estado: 'pendiente', orden: '', totalPasos: '', asunto: '', nombre: '', bytes: null, error: '' }));
+    objetivo = CD6_RESULTADOS;
+  }
+
+  CD6_EN_CURSO = true; cd6Botones(false); cd6PintarTabla();
+  const modo = document.querySelector('#PCD_TdmModo').value;
+
+  await ejecutarConPool(objetivo, Math.min(CONCURRENCIA_MAXIMA, 5), cd6ProcesarTarea,
+    (hechos, total) => cd6Estado(`⏳ Consultando ${hechos}/${total}… (hasta 5 a la vez)`));
+
+  const nuevosOk = objetivo.filter(r => r.estado === 'ok');
+  if (nuevosOk.length) {
+    // En reintento se entregan solo los recuperados; en ejecución normal, todos.
+    const respaldo = CD6_RESULTADOS;
+    if (soloFallidos) CD6_RESULTADOS = nuevosOk;
+    await cd6Entregar(modo);
+    CD6_RESULTADOS = respaldo;
+  }
+
+  const ok = CD6_RESULTADOS.filter(r => r.estado === 'ok').length;
+  const err = CD6_RESULTADOS.filter(r => r.estado === 'error').length;
+  cd6Estado(`🏁 ${ok} descargado(s) · ${err} con error${err ? ' (usa "Reintentar fallidos" o revisa la consola)' : ''}.`);
+  CD6_EN_CURSO = false; cd6Botones(true);
+}
+
+function cd6ExportarExcel() {
+  if (!CD6_RESULTADOS.length) return cd6Estado('Aún no hay resultados para exportar.');
+  const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const filas = CD6_RESULTADOS.map(r => `<tr><td>${esc(r.id)}</td><td>${r.estado === 'ok' ? 'OK' : 'ERROR'}</td><td>${esc(r.orden)}</td><td>${esc(r.totalPasos)}</td><td>${esc(r.nombre)}</td><td>${esc(r.asunto)}</td><td>${esc(r.error)}</td></tr>`).join('');
+  const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>IDTAREADOC</th><th>Resultado</th><th>Versión descargada</th><th>Pasos del flujo</th><th>Archivo</th><th>Asunto</th><th>Error</th></tr>${filas}</table></body></html>`;
+  cd4DescargarBlob(new Blob([html], { type: 'application/vnd.ms-excel' }), `Descarga_UltimasVersiones_${new Date().toISOString().slice(0, 10)}.xls`);
+}
+
+function cd6PintarTabla() {
+  const cont = document.querySelector('#PCD_TdmTabla');
+  if (!cont) return;
+  if (!CD6_RESULTADOS.length) { cont.innerHTML = ''; return; }
+  const icono = { pendiente: '⏸', procesando: '⏳', ok: '✅', error: '❌' };
+  const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  cont.innerHTML = `
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+      <thead><tr style="background:#f3f4f6; text-align:left;">
+        <th style="padding:4px;"></th><th style="padding:4px;">IDTAREADOC</th><th style="padding:4px;">Versión</th><th style="padding:4px;">Asunto / detalle</th><th style="padding:4px;"></th>
+      </tr></thead>
+      <tbody>${CD6_RESULTADOS.map((r, i) => `
+        <tr style="border-bottom:1px solid #f3f4f6; ${r.estado === 'error' ? 'background:#fff7f7;' : ''}">
+          <td style="padding:4px;">${icono[r.estado]}</td>
+          <td style="padding:4px; font-weight:bold;">${esc(r.id)}</td>
+          <td style="padding:4px;">${r.orden ? `v${esc(r.orden)} de ${esc(r.totalPasos)}` : '—'}</td>
+          <td style="padding:4px; word-break:break-word;">${r.estado === 'error' ? `<span style="color:#dc2626;">${esc(r.error)}</span>` : esc(r.asunto).slice(0, 90)}</td>
+          <td style="padding:4px;">${r.estado === 'ok' ? `<button class="cd6-ver" data-i="${i}" title="Previsualizar" style="border:none; background:none; cursor:pointer;">👁</button>` : ''}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+  cont.querySelectorAll('.cd6-ver').forEach(b => {
+    b.onclick = () => { const r = CD6_RESULTADOS[Number(b.dataset.i)]; if (r?.bytes) window.open(URL.createObjectURL(new Blob([r.bytes], { type: 'application/pdf' })), '_blank'); };
+  });
+}
+
+function cd6CambiarSubtab(clave) {
+  const esTarea = clave === 'tarea';
+  document.querySelector('#PCD_SubCuerpoIdc').style.display = esTarea ? 'none' : 'block';
+  document.querySelector('#PCD_SubCuerpoTarea').style.display = esTarea ? 'block' : 'none';
+  const btnIdc = document.querySelector('#PCD_SubTabDescIdc'), btnTarea = document.querySelector('#PCD_SubTabDescTarea');
+  btnIdc.style.background = esTarea ? '#e5e7eb' : '#2563eb'; btnIdc.style.color = esTarea ? '#111827' : '#fff';
+  btnTarea.style.background = esTarea ? '#2563eb' : '#e5e7eb'; btnTarea.style.color = esTarea ? '#fff' : '#111827';
+}
+
+
 const CD3_TABS = [
   { clave: 'cargar',       emoji: '🔄', etiqueta: 'Cargar',    titulo: 'Cargar y Clasificar',                         color: '#111827', cuerpoId: '#PCD_CuerpoSec2' },
   { clave: 'resultados',   emoji: '📊', etiqueta: 'Result.',   titulo: 'Resultados',                                  color: '#2563eb', cuerpoId: '#PCD_CuerpoSec3' },
@@ -3433,17 +3578,43 @@ function cd3CrearPanel() {
       </div>
 
       <div id="PCD_CuerpoSec8" style="display:none;">
-        <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">Pega uno o varios IDC (uno por línea o separados por coma). Cada botón arma <b>un solo .zip</b> para descargar de una vez.</p>
-        <div style="display:flex; gap:6px; margin-bottom:6px;">
-          <button id="PCD_DescargasCargarResultados" style="padding:5px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Cargar desde Resultados</button>
+        <div style="display:flex; gap:6px; margin-bottom:10px;">
+          <button id="PCD_SubTabDescIdc" class="cd6-subtab-btn" data-sub="idc" style="flex:1; padding:7px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:11px; font-weight:bold;">🧾 Por IDC</button>
+          <button id="PCD_SubTabDescTarea" class="cd6-subtab-btn" data-sub="tarea" style="flex:1; padding:7px; background:#e5e7eb; color:#111827; border:none; border-radius:6px; cursor:pointer; font-size:11px; font-weight:bold;">📑 Por IDTAREADOC (última versión)</button>
         </div>
-        <textarea id="PCD_DescargasIds" rows="5" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin-bottom:10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
-        <div style="display:flex; flex-direction:column; gap:6px;">
-          <button data-modo="pdf" class="cd5-btn-descarga" style="padding:9px; background:#e0e7ff; color:#3730a3; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📄 Solo PDF (un .zip con un PDF por documento)</button>
-          <button data-modo="adjuntos" class="cd5-btn-descarga" style="padding:9px; background:#dbeafe; color:#1e3a8a; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📎 Solo Adjuntos (un .zip con los adjuntos de cada documento)</button>
-          <button data-modo="ambos" class="cd5-btn-descarga" style="padding:9px; background:#be123c; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📦 PDF + Adjuntos juntos (todo en un solo .zip)</button>
+
+        <div id="PCD_SubCuerpoIdc">
+          <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">Pega uno o varios IDC (uno por línea o separados por coma). Cada botón arma <b>un solo .zip</b> para descargar de una vez.</p>
+          <div style="display:flex; gap:6px; margin-bottom:6px;">
+            <button id="PCD_DescargasCargarResultados" style="padding:5px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Cargar desde Resultados</button>
+          </div>
+          <textarea id="PCD_DescargasIds" rows="5" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin-bottom:10px; box-sizing:border-box;" placeholder="2333190, 2332499, 2328268&#10;o uno por línea"></textarea>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <button data-modo="pdf" class="cd5-btn-descarga" style="padding:9px; background:#e0e7ff; color:#3730a3; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📄 Solo PDF (un .zip con un PDF por documento)</button>
+            <button data-modo="adjuntos" class="cd5-btn-descarga" style="padding:9px; background:#dbeafe; color:#1e3a8a; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📎 Solo Adjuntos (un .zip con los adjuntos de cada documento)</button>
+            <button data-modo="ambos" class="cd5-btn-descarga" style="padding:9px; background:#be123c; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📦 PDF + Adjuntos juntos (todo en un solo .zip)</button>
+          </div>
+          <div id="PCD_DescargasEstado" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
         </div>
-        <div id="PCD_DescargasEstado" style="font-size:12px; color:#6b7280; margin-top:8px;"></div>
+
+        <div id="PCD_SubCuerpoTarea" style="display:none;">
+          <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">Pega uno o varios <b>IDTAREADOC</b> (no es el IDC). Para cada uno se busca, dentro de su flujo, el paso más reciente que tenga un PDF diligenciado, y se descarga esa versión. Solo lectura: no modifica ninguna tarea.</p>
+          <textarea id="PCD_TdmIds" rows="5" placeholder="466393&#10;466401, 466420" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin-bottom:8px; box-sizing:border-box;"></textarea>
+          <div style="display:flex; gap:6px; margin-bottom:8px;">
+            <select id="PCD_TdmModo" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px; font-size:12px;">
+              <option value="zip">Un solo ZIP con todos los PDF (recomendado)</option>
+              <option value="individual">Un PDF por archivo</option>
+            </select>
+            <button id="PCD_TdmEjecutar" style="padding:6px 12px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">⬇ Descargar</button>
+          </div>
+          <div style="display:flex; gap:6px; margin-bottom:8px;">
+            <button id="PCD_TdmReintentar" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer; font-size:12px;">🔁 Reintentar fallidos</button>
+            <button id="PCD_TdmCopiarFallidos" style="flex:1; padding:6px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer; font-size:12px;">📋 Copiar IDs fallidos</button>
+            <button id="PCD_TdmExportar" style="flex:1; padding:6px; background:#374151; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px;">📥 Excel de resultados</button>
+          </div>
+          <div id="PCD_TdmEstado" style="font-size:12px; color:#6b7280; margin-bottom:8px;">Pega los IDTAREADOC y pulsa Descargar.</div>
+          <div id="PCD_TdmTabla" style="max-height:300px; overflow-y:auto;"></div>
+        </div>
       </div>
 
       <div id="PCD_CuerpoComentarios" style="display:none;">
@@ -3500,6 +3671,16 @@ function cd3CrearPanel() {
   document.querySelectorAll('.cd3-tab-btn').forEach(btn => { btn.onclick = () => cd3CambiarTab(btn.dataset.tab); });
   document.querySelector('#PCD_DescargasCargarResultados').onclick = cd5CargarDesdeResultados;
   document.querySelectorAll('.cd5-btn-descarga').forEach(btn => { btn.onclick = () => cd5DescargarMasivo(btn.dataset.modo); });
+  document.querySelectorAll('.cd6-subtab-btn').forEach(btn => { btn.onclick = () => cd6CambiarSubtab(btn.dataset.sub); });
+  document.querySelector('#PCD_TdmEjecutar').onclick = () => cd6Ejecutar(false);
+  document.querySelector('#PCD_TdmReintentar').onclick = () => cd6Ejecutar(true);
+  document.querySelector('#PCD_TdmExportar').onclick = cd6ExportarExcel;
+  document.querySelector('#PCD_TdmCopiarFallidos').onclick = () => {
+    const ids = CD6_RESULTADOS.filter(r => r.estado === 'error').map(r => r.id);
+    if (!ids.length) return cd6Estado('No hay IDs fallidos para copiar.');
+    cdCopiarTexto(ids.join('\n'));
+    cd6Estado(`📋 ${ids.length} ID(s) fallidos copiados al portapapeles.`);
+  };
   cd3CambiarTab(CD3_TAB_ACTIVA);
   document.querySelector('#TD_Buscar').onclick = tdEjecutarBusqueda;
   document.querySelector('#TD_Input').addEventListener('keydown', (e) => { if (e.key === 'Enter') tdEjecutarBusqueda(); });
