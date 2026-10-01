@@ -73,6 +73,16 @@ const CONFIG_DEPENDENCIAS = {
     palabras: 'ALERTA ROSA:2, LEY 2326 DE 2023:2',
   },
 
+  // ─── Nueva dependencia, agregada tal como pediste ───
+  // Sin "palabras" todavía: aparece en el desplegable y se puede elegir a mano,
+  // pero no se le va a predecir nada automático hasta que definas qué temas
+  // le pertenecen. Agrégalas en el mismo formato de las demás (ej:
+  // 'CANAL DIGITAL:1.5, PQRSDF VIRTUAL, CHATBOT').
+  gestorCanales: {
+    nombre: 'Grupo Gestor de Canales', idOficina: 98, idUnidad: 4, color: '#0d9488', emoji: '📡',
+    palabras: '',
+  },
+
 };
 // --> cdBuscarOficinaPorNombre('NOMBRE DE DIRECCIÓN/DEPENDENCIA') [EJECUTAR Y LLENAR LA NUEVA ENTRADA DE LA SUBDIRECCIÓN/DIRECCIÓN]
 //
@@ -1749,6 +1759,16 @@ function cd3ObtenerFiltrados() {
     .split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
   if (terminaciones.length) {
     documentosFiltrados = documentosFiltrados.filter(d => terminaciones.some(t => String(d.radicado || '').endsWith(t)));
+  }
+
+  // Excluir IDC puntuales (se resta al final, sobre lo que haya quedado de los
+  // filtros de arriba): los que pongas aquí nunca se muestran.
+  const excluidos = new Set(
+    (document.querySelector('#PCD_ExcluirIdc')?.value || '')
+      .split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
+  );
+  if (excluidos.size) {
+    documentosFiltrados = documentosFiltrados.filter(d => !excluidos.has(String(d.idc)));
   }
   return documentosFiltrados;
 }
@@ -3505,6 +3525,9 @@ function cd3CrearPanel() {
         </div>
         <div id="PCD_CopiarPrimerosEstado" style="font-size:11px; margin-bottom:8px;"></div>
 
+        <label style="color:#6b7280; font-size:11px;">🚫 Excluir estos IDC (no se muestran, aunque cumplan los filtros de arriba)</label>
+        <textarea id="PCD_ExcluirIdc" rows="2" placeholder="ej: 2333190, 2332499&#10;o uno por línea" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;"></textarea>
+
         <div id="PCD_TablaResultados" style="max-height:520px; overflow-y:auto;">
           <div style="color:#9ca3af; font-size:12px; padding:10px 0;">Aún no hay documentos clasificados.</div>
         </div>
@@ -3707,6 +3730,7 @@ function cd3CrearPanel() {
     cd3RenderizarResultados();
   };
   document.querySelector('#PCD_FiltroRadicadoTerminacion').addEventListener('input', cd3RenderizarResultados);
+  document.querySelector('#PCD_ExcluirIdc').addEventListener('input', cd3RenderizarResultados);
   document.querySelectorAll('.cd3-btn-copiar-primeros').forEach(btn => { btn.onclick = () => cd3CopiarPrimerosIdc(Number(btn.dataset.n)); });
   document.querySelector('#PCD_CopiarPrimerosBtn').onclick = () => {
     const n = Number(document.querySelector('#PCD_CopiarPrimerosN').value);
