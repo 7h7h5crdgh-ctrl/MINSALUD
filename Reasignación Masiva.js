@@ -1325,6 +1325,7 @@ let CD3_PALABRAS_PRIORIZACION = 'HONORABLE SENADOR, HONORABLE SENADORA, HONORABL
 
 let CD3_DOCUMENTOS = [];
 let CD3_FILTRO_ACTUAL = 'todos';
+let CD3_ORDEN_ACTUAL = 'original'; // original | rad-asc | rad-desc | asig-asc | asig-desc
 let CD3_FILA_SELECCIONADA = null; // idc de la fila resaltada (para no perderse entre documentos)
 
 // Bandeja a cargar: idFuncionario 0 = la tuya. "Seleccionada" es lo que elegiste
@@ -1463,6 +1464,7 @@ async function cd3EjecutarClasificacion() {
         idc: doc.IDDOCUMENTO, radicado: doc.RADICADO, asunto: doc.DESCRIPCION || '(sin descripción)',
         // Ambas fechas vienen en el mismo registro de la bandeja: no hace falta pedirlas aparte.
         fechaAsignacion: cdParseAspDate(doc.FECHAASIGNO), fechaRadicacion: cdParseAspDate(doc.FECHARADICO),
+        fechaAsignacionMs: cd3FechaMs(doc.FECHAASIGNO), fechaRadicacionMs: cd3FechaMs(doc.FECHARADICO),
         prediccion, esPriorizacion, confianza, manual: prediccion, estadoEnvio: null, mensajeEstado: '',
       };
     });
@@ -1743,6 +1745,35 @@ function cd3RenderizarFlujoCompacto(paso) {
   `;
 }
 
+// Convierte "/Date(1758000000000)/" (o una fecha legible) a milisegundos;
+// null si no trae fecha válida (esos documentos quedan al final al ordenar).
+function cd3FechaMs(valor) {
+  if (!valor) return null;
+  const m = /\/Date\((-?\d+)\)\//.exec(String(valor));
+  const ms = m ? parseInt(m[1], 10) : Date.parse(valor);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+const CD3_ORDENES = {
+  'original':  { etiqueta: '↕️ Orden de la bandeja (sin ordenar)' },
+  'rad-asc':   { etiqueta: '📅 Radicación: más antigua primero',  campo: 'fechaRadicacionMs', dir: 1 },
+  'rad-desc':  { etiqueta: '📅 Radicación: más reciente primero', campo: 'fechaRadicacionMs', dir: -1 },
+  'asig-asc':  { etiqueta: '📤 Asignación: más antigua primero',  campo: 'fechaAsignacionMs', dir: 1 },
+  'asig-desc': { etiqueta: '📤 Asignación: más reciente primero', campo: 'fechaAsignacionMs', dir: -1 },
+};
+
+function cd3Ordenar(lista) {
+  const o = CD3_ORDENES[CD3_ORDEN_ACTUAL];
+  if (!o || !o.campo) return lista;
+  return lista.slice().sort((a, b) => {
+    const va = a[o.campo], vb = b[o.campo];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;   // sin fecha, siempre al final
+    if (vb == null) return -1;
+    return (va - vb) * o.dir;
+  });
+}
+
 // Aplica el filtro de categoría + terminación de radicado. La usan tanto el
 // render de las tarjetas como el botón de "copiar los primeros N IDC".
 function cd3ObtenerFiltrados() {
@@ -1770,7 +1801,7 @@ function cd3ObtenerFiltrados() {
   if (excluidos.size) {
     documentosFiltrados = documentosFiltrados.filter(d => !excluidos.has(String(d.idc)));
   }
-  return documentosFiltrados;
+  return cd3Ordenar(documentosFiltrados);
 }
 
 // Copia los primeros N IDC de la vista filtrada actual (cualquiera que sea el
@@ -3413,6 +3444,7 @@ const CD3_TABS = [
   { clave: 'comentarios',  emoji: '💬', etiqueta: 'Coment.',   titulo: 'Comentarios de gestión',                      color: '#0d9488', cuerpoId: '#PCD_CuerpoComentarios' },
   { clave: 'palabras',     emoji: '⚙️', etiqueta: 'Palabras',  titulo: 'Configuración de Palabras Clave',             color: '#6b7280', cuerpoId: '#PCD_CuerpoSec1' },
   { clave: 'descargas',    emoji: '⬇️', etiqueta: 'Descargas', titulo: 'Descarga masiva (PDF, adjuntos, o ambos)',    color: '#be123c', cuerpoId: '#PCD_CuerpoSec8' },
+  { clave: 'ia',           emoji: '🤖', etiqueta: 'IA',        titulo: 'Reasignación masiva desde tabla generada por IA', color: '#4f46e5', cuerpoId: '#PCD_CuerpoSec9' },
 ];
 let CD3_TAB_ACTIVA = 'cargar';
 
@@ -3509,6 +3541,11 @@ function cd3CrearPanel() {
           <option value="priorizacion">🏛️ Priorizaciones y Control Político</option>
           <option value="baja-confianza">⚠️ Baja confianza (revisar)</option>
           ${Object.entries(CD3_SUBDIRECCIONES).map(([clave, sub]) => `<option value="${clave}">${sub.emoji} Solo: ${sub.nombre}</option>`).join('')}
+        </select>
+
+        <label style="color:#6b7280; font-size:11px;">Ordenar por fecha</label>
+        <select id="PCD_OrdenTabla" style="width:100%; padding:5px; border:1px solid #ccc; border-radius:4px; margin:3px 0 8px; font-size:11px; box-sizing:border-box;">
+          ${Object.entries(CD3_ORDENES).map(([clave, o]) => `<option value="${clave}">${o.etiqueta}</option>`).join('')}
         </select>
 
         <label style="color:#6b7280; font-size:11px;">Terminación del radicado (además del filtro de arriba)</label>
@@ -3704,6 +3741,7 @@ function cd3CrearPanel() {
     cdCopiarTexto(ids.join('\n'));
     cd6Estado(`📋 ${ids.length} ID(s) fallidos copiados al portapapeles.`);
   };
+  cd7InyectarPestana();   // contenido de la pestaña 🤖 IA (sección más abajo)
   cd3CambiarTab(CD3_TAB_ACTIVA);
   document.querySelector('#TD_Buscar').onclick = tdEjecutarBusqueda;
   document.querySelector('#TD_Input').addEventListener('keydown', (e) => { if (e.key === 'Enter') tdEjecutarBusqueda(); });
@@ -3729,6 +3767,9 @@ function cd3CrearPanel() {
     CD3_FILTRO_ACTUAL = e.target.value;
     cd3RenderizarResultados();
   };
+  const selOrden = document.querySelector('#PCD_OrdenTabla');
+  selOrden.value = CD3_ORDEN_ACTUAL;
+  selOrden.onchange = (e) => { CD3_ORDEN_ACTUAL = e.target.value; cd3RenderizarResultados(); };
   document.querySelector('#PCD_FiltroRadicadoTerminacion').addEventListener('input', cd3RenderizarResultados);
   document.querySelector('#PCD_ExcluirIdc').addEventListener('input', cd3RenderizarResultados);
   document.querySelectorAll('.cd3-btn-copiar-primeros').forEach(btn => { btn.onclick = () => cd3CopiarPrimerosIdc(Number(btn.dataset.n)); });
@@ -3799,6 +3840,535 @@ function cd3HabilitarArrastre(contenedor, agarre) {
     contenedor.style.left = (e.clientX - offsetX) + 'px'; contenedor.style.top = y + 'px';
   });
   document.addEventListener('mouseup', () => { arrastrando = false; });
+}
+
+// ════════════════════════════════════════════════════════════════
+// ═══ PESTAÑA 🤖 IA: REASIGNACIÓN MASIVA DESDE TABLA GENERADA POR IA ═══
+// Pegar la tabla generada por IA (IDC | dependencia | comentario |
+// justificación) → se busca cada dependencia en el catálogo de oficinas de
+// ControlDoc (sin tildes, sin mayúsculas y sin palabras vacías), se obtiene
+// su jefe y se verifica que el IDC siga en tu bandeja → previsualización →
+// reasignar fila por fila o todas las seleccionadas.
+//
+// Cada IDC puede ir a UNA o VARIAS dependencias (un solo trámite con varios
+// destinatarios, igual que "Agregar Todos" en ControlDoc). Si la columna de
+// dependencia trae varias separadas por "+" o ";", se cargan todas.
+// ════════════════════════════════════════════════════════════════
+
+const CD7_CONCURRENCIA_VALIDACION = 5;  // validaciones simultáneas al cargar la tabla
+const CD7_UMBRAL_AUTO = 0.85;            // puntaje mínimo para aceptar el destino sin confirmación
+const CD7_MARGEN_AUTO = 0.10;            // ventaja mínima del primer candidato sobre el segundo
+const CD7_PUNTAJE_MINIMO = 0.40;         // por debajo de esto un candidato no se ofrece
+const CD7_ESPERA_LIMPIEZA_MS = 2000;     // los IDC reasignados con éxito salen de la lista tras 2 segundos
+const CD7_PALABRAS_VACIAS = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL', 'Y', 'E', 'EN', 'A', 'PARA', 'POR', 'CON', 'AL']);
+const CD7_PALABRAS_TIPO = new Set(['DIRECCION', 'SUBDIRECCION', 'OFICINA', 'GRUPO', 'DESPACHO', 'VICEMINISTERIO', 'VICEMINISTRO', 'SECRETARIA', 'UNIDAD', 'COORDINACION', 'ASESORA']);
+
+let CD7_FILAS = [];
+let CD7_CATALOGO = null;   // [{ idOficina, idUnidad, nombre, tipo:[], nucleo:[] }]
+let CD7_EN_CURSO = false;
+
+// ── Utilidades ──
+function cd7Esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Normaliza igual que ControlDoc registra sus dependencias: sin tildes, en
+// mayúsculas, sin signos, y sin palabras vacías (DE, LA, Y…).
+function cd7Tokens(texto) {
+  return cd3Normalizar(texto).replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(t => t && !CD7_PALABRAS_VACIAS.has(t));
+}
+
+function cd7Separar(tokens) {
+  return { tipo: tokens.filter(t => CD7_PALABRAS_TIPO.has(t)), nucleo: tokens.filter(t => !CD7_PALABRAS_TIPO.has(t)) };
+}
+
+// Compara el núcleo del nombre (sin "Dirección/Subdirección/Oficina…").
+// Tolera nombres truncados en ControlDoc: "TRANSMIS" coincide con "TRANSMISIBLES".
+function cd7Puntaje(consulta, cand) {
+  const q = consulta.nucleo, c = cand.nucleo;
+  if (!q.length || !c.length) return 0;
+  const coincide = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a)));
+  const cobertura = q.filter(t => c.some(x => coincide(t, x))).length / q.length;
+  const precision = c.filter(t => q.some(x => coincide(t, x))).length / c.length;
+  let p = 0.65 * cobertura + 0.35 * precision;
+  // "Subdirección" y "Dirección" con el mismo núcleo no son lo mismo.
+  if (consulta.tipo.length && cand.tipo.length) p += consulta.tipo[0] === cand.tipo[0] ? 0.05 : -0.10;
+  return Math.max(0, Math.min(1, p));
+}
+
+async function cd7CargarCatalogo() {
+  if (CD7_CATALOGO) return CD7_CATALOGO;
+  const resp = await cdFetchGet(CD_CONFIG.urlOficinas);
+  const data = await resp.json();
+  const vistos = new Set();
+  CD7_CATALOGO = (data || [])
+    .filter(o => o.IDOFICINAPRODUCTORA != null && o.NOMBRE && String(o.ESTADO || 'SI').toUpperCase() !== 'NO')
+    .map(o => ({ idOficina: Number(o.IDOFICINAPRODUCTORA), idUnidad: Number(o.IDUNIDADADMINISTRATIVA), nombre: o.NOMBRE, ...cd7Separar(cd7Tokens(o.NOMBRE)) }))
+    .filter(o => { const k = `${o.idUnidad}-${o.idOficina}`; if (vistos.has(k)) return false; vistos.add(k); return true; });
+  return CD7_CATALOGO;
+}
+
+// Candidatos ordenados por parecido. Las dependencias ya configuradas en
+// CONFIG_DEPENDENCIAS reciben un pequeño empujón en caso de empate.
+function cd7Candidatos(nombreDependencia, minimo = CD7_PUNTAJE_MINIMO) {
+  const consulta = cd7Separar(cd7Tokens(nombreDependencia));
+  const configuradas = new Set(Object.values(CONFIG_DEPENDENCIAS).filter(d => d.idOficina != null).map(d => `${d.idUnidad ?? CD2_IDUNIDAD}-${d.idOficina}`));
+  return (CD7_CATALOGO || [])
+    .map(c => {
+      let p = cd7Puntaje(consulta, c);
+      if (p > 0 && configuradas.has(`${c.idUnidad}-${c.idOficina}`)) p = Math.min(1, p + 0.05);
+      return { ...c, puntaje: p };
+    })
+    .filter(c => c.puntaje >= minimo)
+    .sort((a, b) => b.puntaje - a.puntaje)
+    .slice(0, 6);
+}
+
+// ── Lectura de la tabla ──
+// Acepta: tabla Markdown (con "|"), tabla copiada desde el chat (columnas
+// separadas por tabulador) o JSON [{idc, dependencia, comentario, justificacion}].
+function cd7ParsearTexto(texto) {
+  const t = texto.trim();
+  if (!t) return [];
+  const limpiar = (s) => String(s ?? '').replace(/\*\*/g, '').trim();
+  if (t.startsWith('[') || t.startsWith('{')) {
+    let datos = JSON.parse(t);
+    if (!Array.isArray(datos)) datos = [datos];
+    return datos.map(o => ({
+      idc: String(o.idc ?? o.IDC ?? '').replace(/\D/g, ''),
+      dependencia: limpiar(Array.isArray(o.dependencia) ? o.dependencia.join(' + ') : (o.dependencia ?? o.DEPENDENCIA)),
+      comentario: limpiar(o.comentario ?? o.COMENTARIO), justificacion: limpiar(o.justificacion ?? o.JUSTIFICACION),
+    })).filter(f => f.idc);
+  }
+  const filas = [];
+  for (const linea of t.split(/\r?\n/)) {
+    let celdas;
+    if (linea.includes('|')) celdas = linea.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|');
+    else if (linea.includes('\t')) celdas = linea.split('\t');
+    else continue;
+    celdas = celdas.map(limpiar);
+    if (celdas.every(c => c === '' || /^:?-{2,}:?$/.test(c))) continue;   // línea separadora
+    const idc = (celdas[0] || '').replace(/\D/g, '');
+    if (!idc) continue;                                                    // encabezado
+    filas.push({ idc, dependencia: celdas[1] || '', comentario: celdas[2] || '', justificacion: celdas.slice(3).join(' | ') });
+  }
+  return filas;
+}
+
+// Varias dependencias en la misma celda: "Dirección X + Subdirección Y" o "X; Y".
+function cd7DividirDependencias(texto) {
+  return String(texto || '').split(/\s*[+;]\s*/).map(s => s.trim()).filter(Boolean);
+}
+
+// ── Destinos de cada fila ──
+// Cada destino: { texto, candidatos, sel, confianza, confirmado, jefe }
+function cd7NuevoDestino(texto, minimo) {
+  const candidatos = cd7Candidatos(texto, minimo);
+  const [a, b] = candidatos;
+  return {
+    texto, candidatos, sel: candidatos.length ? 0 : -1, jefe: null, confirmado: false,
+    confianza: a && a.puntaje >= CD7_UMBRAL_AUTO && (!b || a.puntaje - b.puntaje >= CD7_MARGEN_AUTO) ? 'alta' : (a ? 'baja' : 'ninguna'),
+  };
+}
+
+function cd7Elegido(d) { return d.candidatos[d.sel] || null; }
+
+async function cd7ResolverJefe(d) {
+  const o = cd7Elegido(d);
+  d.jefe = null;
+  if (!o) return;
+  try { d.jefe = (await cd2ObtenerJefe(o.idOficina, o.idUnidad)).NOMBRESAPELLIDOS; }
+  catch (e) { d.jefe = 'error'; }
+}
+
+function cd7CalcularEstado(f) {
+  if (f.estado === 'ok') return;
+  if (f.enBandeja === false) { f.estado = 'error'; f.mensaje = 'No está pendiente en tu bandeja (ya se tramitó o no está asignado a ti).'; return; }
+  if (!f.destinos.length) { f.estado = 'error'; f.mensaje = 'Sin dependencia: agrega una con "➕ Agregar dependencia" o quita la fila.'; return; }
+  const sinCoincidencia = f.destinos.findIndex(d => d.sel < 0);
+  if (sinCoincidencia !== -1) { f.estado = 'error'; f.mensaje = `Destino ${sinCoincidencia + 1}: no hay una dependencia parecida en ControlDoc. Búscala con 🔎.`; return; }
+  const sinJefe = f.destinos.findIndex(d => !d.jefe || d.jefe === 'error');
+  if (sinJefe !== -1) { f.estado = 'error'; f.mensaje = `Destino ${sinJefe + 1}: la dependencia no tiene jefe registrado. Elige otra.`; return; }
+  const claves = f.destinos.map(d => { const o = cd7Elegido(d); return `${o.idUnidad}-${o.idOficina}`; });
+  if (new Set(claves).size !== claves.length) { f.estado = 'revisar'; f.mensaje = 'Hay una dependencia repetida entre los destinos.'; return; }
+  if (!f.comentario.trim()) { f.estado = 'revisar'; f.mensaje = 'El comentario está vacío.'; return; }
+  const porConfirmar = f.destinos.findIndex(d => d.confianza !== 'alta' && !d.confirmado);
+  if (porConfirmar !== -1) { f.estado = 'revisar'; f.mensaje = `Destino ${porConfirmar + 1}: el nombre no coincide exacto, confirma la dependencia en la lista.`; return; }
+  f.estado = 'listo'; f.mensaje = '';
+}
+
+async function cd7Recalcular(f) {
+  cd7CalcularEstado(f); cd7PintarFila(f); cd7PintarResumen();
+}
+
+async function cd7ValidarFila(f) {
+  f.estado = 'validando'; cd7PintarFila(f);
+  f.destinos = cd7DividirDependencias(f.dependencia).map(t => cd7NuevoDestino(t));
+  try {
+    const reg = await cd2BuscarEnBandeja(f.idc);
+    f.enBandeja = true; f.radicado = reg.RADICADO || ''; f.asunto = reg.DESCRIPCION || '';
+  } catch (e) { f.enBandeja = false; }
+  if (f.radicado == null) await cd7AsegurarDatos(f);   // fuera de la bandeja: se busca igual para mostrar y copiar
+  await Promise.all(f.destinos.map(cd7ResolverJefe));
+  f.estado = 'pendiente';
+  await cd7Recalcular(f);
+}
+
+async function cd7CargarTabla() {
+  const estado = document.querySelector('#PCD7_Estado');
+  let filas;
+  try { filas = cd7ParsearTexto(document.querySelector('#PCD7_Texto').value); }
+  catch (e) { estado.textContent = '❌ El texto parece JSON pero no es válido: ' + e.message; return; }
+  if (!filas.length) { estado.textContent = 'No encontré filas con IDC. Pega la tabla completa, incluido el encabezado.'; return; }
+
+  const vistos = new Set(), duplicados = [];
+  CD7_FILAS = filas.filter(f => { if (vistos.has(f.idc)) { duplicados.push(f.idc); return false; } vistos.add(f.idc); return true; })
+    .map(f => ({ ...f, incluirJust: document.querySelector('#PCD7_JustTodas').checked, seleccionado: true, destinos: [], enBandeja: null, radicado: null, asunto: null, estado: 'pendiente', mensaje: '' }));
+
+  cd7PintarTodo();
+  estado.textContent = '⏳ Cargando el catálogo de dependencias de ControlDoc…';
+  try { await cd7CargarCatalogo(); }
+  catch (e) { estado.textContent = '❌ No se pudo cargar el catálogo de dependencias: ' + e.message; return; }
+
+  estado.textContent = `⏳ Validando 0/${CD7_FILAS.length}…`;
+  await ejecutarConPool(CD7_FILAS.slice(), CD7_CONCURRENCIA_VALIDACION, cd7ValidarFila,
+    (hechos, total) => { estado.textContent = `⏳ Validando ${hechos}/${total}…`; });
+  estado.textContent = `${CD7_FILAS.length} fila(s) cargadas.` + (duplicados.length ? ` Se omitieron IDC repetidos: ${duplicados.join(', ')}.` : '');
+}
+
+// Radicado y asunto del IDC, con el mismo buscador del panel de Seguimiento
+// (se usa cuando el documento ya no está en la bandeja).
+async function cd7AsegurarDatos(f) {
+  if (f.radicado != null && f.asunto != null) return;
+  try {
+    const doc = await cdBuscarDocumento(String(f.idc));
+    f.radicado = doc.RADICADO || ''; f.asunto = doc.DESCRIPCION || '';
+  } catch (e) { f.radicado = f.radicado ?? ''; f.asunto = f.asunto ?? ''; }
+}
+
+// Quita la fila de la lista (queda sin dependencia y no se reasigna).
+function cd7QuitarFila(f) {
+  if (['enviando'].includes(f.estado)) return;
+  const idx = CD7_FILAS.indexOf(f);
+  if (idx === -1) return;
+  CD7_FILAS.splice(idx, 1);
+  document.querySelector(`#cd7-fila-${f.idc}`)?.remove();
+  if (!CD7_FILAS.length) cd7PintarTodo(); else cd7PintarResumen();
+  const estado = document.querySelector('#PCD7_Estado');
+  if (estado) estado.textContent = `IDC ${f.idc} quitado de la lista.`;
+}
+
+// ── Comentario final que se envía ──
+function cd7ComentarioFinal(f) {
+  let c = f.comentario.trim();
+  if (f.incluirJust && f.justificacion.trim()) c += ' ' + f.justificacion.trim();
+  const idxSufijo = document.querySelector('#PCD7_Sufijo')?.value;
+  if (idxSufijo !== '' && idxSufijo != null) c += ' ' + CD3_COMENTARIOS_REASIGNACION[Number(idxSufijo)].texto;
+  if (document.querySelector('#PCD7_Mayus')?.checked) c = c.toUpperCase();
+  return c;
+}
+
+function cd7NombresDestinos(f) { return f.destinos.map(d => cd7Elegido(d)?.nombre || '?').join(' + '); }
+
+// Igual que en "📊 Result.": la tarjeta queda en verde un momento para que se
+// vea el éxito y luego sale sola de la lista.
+function cd7ProgramarLimpieza(f) {
+  setTimeout(() => {
+    if (f.estado !== 'ok' || !CD7_FILAS.includes(f)) return;
+    const el = document.querySelector(`#cd7-fila-${f.idc}`);
+    if (el) { el.style.transition = 'opacity 0.3s'; el.style.opacity = '0'; }
+    setTimeout(() => {
+      const idx = CD7_FILAS.indexOf(f);
+      if (idx === -1 || f.estado !== 'ok') return;
+      CD7_FILAS.splice(idx, 1);
+      document.querySelector(`#cd7-fila-${f.idc}`)?.remove();
+      if (!CD7_FILAS.length) cd7PintarTodo(); else cd7PintarResumen();
+    }, 300);
+  }, CD7_ESPERA_LIMPIEZA_MS);
+}
+
+// ── Reasignación ──
+async function cd7ReasignarFila(f) {
+  if (!f.destinos.length || f.estado === 'enviando' || f.estado === 'ok') return;
+  const destinos = f.destinos.map(d => { const o = cd7Elegido(d); return { idOficina: o.idOficina, idUnidad: o.idUnidad, nombre: o.nombre }; });
+  const comentario = cd7ComentarioFinal(f);
+  f.estado = 'enviando'; cd7PintarFila(f);
+  try {
+    let movio, radicado, asunto, jefes;
+    if (destinos.length === 1) {
+      const r = await cd2ReasignarADestino(String(f.idc), destinos[0], comentario);
+      movio = r.movioBandeja; radicado = r.radicado; asunto = r.asunto; jefes = r.jefe;
+    } else {
+      const r = await cd2ReasignarADestinos(String(f.idc), destinos, comentario);
+      movio = r.movioBandeja; radicado = r.radicado; asunto = r.asunto; jefes = r.destinos.map(d => d.jefe).join(' + ');
+    }
+    f.estado = movio ? 'ok' : 'fallo';
+    f.mensaje = movio ? '' : 'Sigue en tu bandeja: el trámite no se completó.';
+    cdBitacoraRegistrar({ accion: destinos.length > 1 ? 'Reasignación multi-destino (tabla IA)' : 'Reasignación (tabla IA)', idc: f.idc, radicado, asunto, destino: destinos.map(d => d.nombre).join(' + '), funcionario: jefes, comentario, resultado: movio ? 'OK' : 'ERROR', detalleResultado: f.mensaje });
+    cd3SincronizarTrasAccionExterna(f.idc, movio);
+    if (movio) cd7ProgramarLimpieza(f);
+  } catch (e) { f.estado = 'fallo'; f.mensaje = e.message; }
+  cd7PintarFila(f); cd7PintarResumen();
+}
+
+async function cd7ReasignarSeleccionados(soloFallidos = false) {
+  if (CD7_EN_CURSO) return;
+  const objetivo = CD7_FILAS.filter(f => soloFallidos ? f.estado === 'fallo' : (f.seleccionado && f.estado === 'listo'));
+  if (!objetivo.length) return alert(soloFallidos ? 'No hay filas fallidas para reintentar.' : 'No hay filas seleccionadas en estado "Listo".');
+
+  const grupos = {};
+  objetivo.forEach(f => { const n = cd7NombresDestinos(f); grupos[n] = (grupos[n] || 0) + 1; });
+  const resumen = Object.entries(grupos).map(([n, k]) => `• ${n}: ${k}`).join('\n');
+  if (!confirm(`Se reasignarán ${objetivo.length} documento(s):\n\n${resumen}\n\n¿Continuar?`)) return;
+
+  CD7_EN_CURSO = true;
+  const estado = document.querySelector('#PCD7_Estado');
+  await ejecutarConPool(objetivo, CONCURRENCIA_MAXIMA, cd7ReasignarFila,
+    (hechos, total) => { estado.textContent = `⏳ Reasignando ${hechos}/${total}… (${CONCURRENCIA_MAXIMA} a la vez)`; });
+  CD7_EN_CURSO = false;
+  const ok = objetivo.filter(f => f.estado === 'ok').length;
+  estado.textContent = `🏁 ${ok} reasignado(s), ${objetivo.length - ok} con error.`;
+}
+
+// ── Interfaz ──
+const CD7_ESTILOS_ESTADO = {
+  pendiente: { texto: 'En espera', fondo: '#f3f4f6', color: '#6b7280', borde: '#d1d5db' },
+  validando: { texto: 'Validando…', fondo: '#dbeafe', color: '#1e40af', borde: '#93c5fd' },
+  listo:     { texto: 'Listo', fondo: '#dcfce7', color: '#166534', borde: '#22c55e' },
+  revisar:   { texto: 'Revisar', fondo: '#fef3c7', color: '#92400e', borde: '#f59e0b' },
+  error:     { texto: 'No se puede reasignar', fondo: '#fee2e2', color: '#991b1b', borde: '#ef4444' },
+  enviando:  { texto: 'Reasignando…', fondo: '#ffedd5', color: '#9a3412', borde: '#f97316' },
+  ok:        { texto: 'Reasignado', fondo: '#16a34a', color: '#fff', borde: '#16a34a' },
+  fallo:     { texto: 'Falló', fondo: '#dc2626', color: '#fff', borde: '#dc2626' },
+};
+
+const CD7_ESTILO_AUX = 'padding:3px 7px; font-size:11px; border:none; border-radius:4px; cursor:pointer;';
+
+// Acciones de los botones auxiliares (las mismas que en "📊 Result.").
+async function cd7AccionAuxiliar(f, accion, btn) {
+  const original = btn.textContent;
+  const marcar = (t) => { btn.textContent = t; setTimeout(() => { btn.textContent = original; }, 1000); };
+  if (accion.startsWith('copiar-')) {
+    if (accion !== 'copiar-idc') await cd7AsegurarDatos(f);
+    const valor = accion === 'copiar-idc' ? String(f.idc) : accion === 'copiar-rad' ? String(f.radicado || '') : String(f.asunto || '');
+    if (!valor) return alert('Este documento no tiene ese dato disponible.');
+    cdCopiarTexto(valor);
+    return marcar('✓');
+  }
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    if (accion === 'ver-pdf') await cdPrevisualizarPdf(f.idc);
+    else if (accion === 'descargar-pdf') await cdDescargarPdf(f.idc);
+    else if (accion === 'adjuntos') await cdDescargarAdjuntos(f.idc);
+    else if (accion === 'pdf-adjuntos') await cd3DescargarPdfYAdjuntosZip(f.idc);
+  } catch (e) { alert('No se pudo completar la acción: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = original; }
+}
+
+function cd7PintarTodo() {
+  const cont = document.querySelector('#PCD7_Lista');
+  if (!cont) return;
+  cont.innerHTML = CD7_FILAS.length
+    ? CD7_FILAS.map(f => `<div id="cd7-fila-${f.idc}"></div>`).join('')
+    : '<div style="color:#9ca3af; font-size:12px; padding:10px 0;">Pega una tabla arriba y pulsa "Cargar y validar".</div>';
+  CD7_FILAS.forEach(cd7PintarFila);
+  cd7PintarResumen();
+}
+
+function cd7PintarResumen() {
+  const cont = document.querySelector('#PCD7_Resumen');
+  if (!cont) return;
+  if (!CD7_FILAS.length) { cont.style.display = 'none'; return; }
+  cont.style.display = 'flex';
+  const cuenta = (e) => CD7_FILAS.filter(f => f.estado === e).length;
+  const seleccionListos = CD7_FILAS.filter(f => f.seleccionado && f.estado === 'listo').length;
+  document.querySelector('#PCD7_Conteos').innerHTML =
+    `${CD7_FILAS.length} en la lista: ✅ ${cuenta('listo')} listos · ⚠️ ${cuenta('revisar')} por revisar · ⛔ ${cuenta('error')} bloqueados · 🚀 ${cuenta('ok')} reasignados · ❌ ${cuenta('fallo')} fallidos`;
+  document.querySelector('#PCD7_ReasignarSel').textContent = `🚀 Reasignar seleccionados (${seleccionListos})`;
+}
+
+function cd7HtmlDestino(f, d, k, bloqueada) {
+  const opciones = d.candidatos.map((c, i) => `<option value="${i}">${cd7Esc(c.nombre)} (${Math.round(c.puntaje * 100)}%)</option>`).join('');
+  const jefe = !cd7Elegido(d) ? '' : d.jefe === 'error'
+    ? '<span style="color:#dc2626;">Sin jefe registrado</span>'
+    : (d.jefe ? `Jefe: ${cd7Esc(d.jefe)}` : '<span style="color:#9ca3af; font-weight:normal;">Buscando jefe…</span>');
+  const aviso = d.confianza !== 'alta' && !d.confirmado && d.candidatos.length ? ' <span title="Coincidencia no exacta: confirma eligiendo en la lista" style="color:#d97706;">⚠️</span>' : '';
+  return `
+    <div style="background:#f9fafb; border-radius:6px; padding:5px 6px; margin-top:5px;">
+      <div style="display:flex; gap:4px; align-items:center;">
+        <span style="font-size:10px; color:#6b7280; white-space:nowrap;">${f.destinos.length > 1 ? `Destino ${k + 1}` : 'Destino'}${aviso}</span>
+        <select class="cd7-destino" data-k="${k}" style="flex:1; min-width:0; padding:4px; font-size:11px; border:1px solid #ccc; border-radius:4px;" ${bloqueada || !d.candidatos.length ? 'disabled' : ''}>
+          ${opciones || `<option>Sin coincidencias para "${cd7Esc(d.texto)}"</option>`}
+        </select>
+        <button class="cd7-buscar" data-k="${k}" title="Buscar esta dependencia por otro nombre" style="padding:3px 7px; font-size:11px; background:#ede9fe; color:#5b21b6; border:none; border-radius:4px; cursor:pointer;" ${bloqueada ? 'disabled' : ''}>🔎</button>
+        <button class="cd7-quitar-destino" data-k="${k}" title="${f.destinos.length > 1 ? 'Quitar este destino' : 'Dejar sin dependencia y quitar el IDC de la lista'}" style="padding:3px 7px; font-size:11px; background:#fee2e2; color:#991b1b; border:none; border-radius:4px; cursor:pointer;" ${bloqueada ? 'disabled' : ''}>✕</button>
+      </div>
+      <div style="font-size:11px; margin-top:3px; color:#1e3a8a; font-weight:bold;">${jefe}</div>
+    </div>`;
+}
+
+function cd7PintarFila(f) {
+  const el = document.querySelector(`#cd7-fila-${f.idc}`);
+  if (!el) return;
+  const est = CD7_ESTILOS_ESTADO[f.estado] || CD7_ESTILOS_ESTADO.pendiente;
+  const bloqueada = ['enviando', 'ok', 'validando'].includes(f.estado);
+  const puedeEnviar = f.estado === 'listo' || f.estado === 'fallo';
+
+  el.innerHTML = `
+    <div style="border:1px solid #e5e7eb; border-left:4px solid ${est.borde}; border-radius:8px; padding:9px; margin-bottom:8px; background:${f.estado === 'ok' ? '#f0fdf4' : '#fff'};">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <label style="display:flex; align-items:center; gap:6px; font-weight:bold; font-size:13px; cursor:pointer;">
+          <input type="checkbox" class="cd7-sel" ${f.seleccionado ? 'checked' : ''} ${bloqueada ? 'disabled' : ''}> IDC ${cd7Esc(f.idc)}
+        </label>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span title="${cd7Esc(f.mensaje)}" style="padding:2px 9px; border-radius:10px; font-size:10px; font-weight:bold; background:${est.fondo}; color:${est.color}; white-space:nowrap;">${est.texto}</span>
+          <button class="cd7-quitar-fila" title="Dejar sin dependencia y quitar el IDC de la lista" style="padding:2px 7px; font-size:10px; background:#e5e7eb; color:#374151; border:none; border-radius:4px; cursor:pointer;" ${f.estado === 'enviando' ? 'disabled' : ''}>🧹 Quitar</button>
+        </div>
+      </div>
+      <div style="color:#6b7280; font-size:11px; margin-top:2px;">Radicado: ${f.radicado ? cd7Esc(f.radicado) : (f.radicado === null ? '…' : '—')}</div>
+      ${f.asunto ? `<div style="font-size:11.5px; margin-top:4px; word-break:break-word; color:#111827;">${cd7Esc(f.asunto)}</div>` : ''}
+      <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
+        <button class="cd7-aux" data-accion="copiar-idc" title="Copiar IDC" style="${CD7_ESTILO_AUX} background:#e5e7eb;">📋 IDC</button>
+        <button class="cd7-aux" data-accion="copiar-rad" title="Copiar Radicado" style="${CD7_ESTILO_AUX} background:#e5e7eb;">📋 Rad</button>
+        <button class="cd7-aux" data-accion="copiar-asu" title="Copiar Asunto" style="${CD7_ESTILO_AUX} background:#e5e7eb;">📋 Asu</button>
+        <button class="cd7-aux" data-accion="ver-pdf" title="Previsualizar el PDF en una pestaña nueva" style="${CD7_ESTILO_AUX} background:#e5e7eb;">👁 Ver PDF</button>
+        <button class="cd7-aux" data-accion="descargar-pdf" title="Descargar solo el PDF del documento" style="${CD7_ESTILO_AUX} background:#e0e7ff; color:#3730a3;">⬇ PDF</button>
+        <button class="cd7-aux" data-accion="adjuntos" title="Descargar los adjuntos del documento" style="${CD7_ESTILO_AUX} background:#e0e7ff; color:#3730a3;">📎 Adjuntos</button>
+        <button class="cd7-aux" data-accion="pdf-adjuntos" title="Descargar el PDF + los adjuntos, juntos en un solo .zip" style="${CD7_ESTILO_AUX} background:#e0e7ff; color:#3730a3;">📦 PDF + Adj.</button>
+      </div>
+      <div style="color:#6b7280; font-size:10px; margin-top:6px;">Sugerido por la IA: ${cd7Esc(f.dependencia) || '—'}</div>
+      ${f.destinos.map((d, k) => cd7HtmlDestino(f, d, k, bloqueada)).join('')}
+      <button class="cd7-agregar-destino" style="margin-top:5px; padding:4px 8px; font-size:11px; background:#eef2ff; color:#3730a3; border:1px dashed #a5b4fc; border-radius:4px; cursor:pointer;" ${bloqueada ? 'disabled' : ''}>➕ Agregar dependencia</button>
+      <textarea class="cd7-comentario" rows="2" style="width:100%; margin-top:5px; padding:4px; font-size:11px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;" ${bloqueada ? 'disabled' : ''}>${cd7Esc(f.comentario)}</textarea>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-top:4px; flex-wrap:wrap;">
+        <label title="${cd7Esc(f.justificacion || 'Sin justificación en la tabla')}" style="font-size:11px; color:#4b5563; cursor:pointer; display:flex; align-items:center; gap:4px;">
+          <input type="checkbox" class="cd7-just" ${f.incluirJust ? 'checked' : ''} ${bloqueada || !f.justificacion ? 'disabled' : ''}> Agregar justificación al comentario
+        </label>
+        <button class="cd7-enviar" style="padding:5px 10px; font-size:11px; font-weight:bold; background:#111827; color:#fff; border:none; border-radius:5px; cursor:${puedeEnviar ? 'pointer' : 'not-allowed'}; opacity:${puedeEnviar ? '1' : '0.4'};" ${puedeEnviar ? '' : 'disabled'}>🚀 Reasignar${f.destinos.length > 1 ? ` (${f.destinos.length} destinos)` : ''}</button>
+      </div>
+      ${f.mensaje ? `<div style="font-size:10.5px; color:${est.color === '#fff' ? est.fondo : est.color}; margin-top:4px;">${cd7Esc(f.mensaje)}</div>` : ''}
+    </div>`;
+
+  el.querySelectorAll('.cd7-destino').forEach(sel => {
+    const d = f.destinos[Number(sel.dataset.k)];
+    if (d.candidatos.length) sel.value = String(d.sel);
+    sel.onchange = async () => {
+      d.sel = Number(sel.value); d.confirmado = true; d.jefe = null; cd7PintarFila(f);
+      await cd7ResolverJefe(d); cd7Recalcular(f);
+    };
+  });
+  el.querySelectorAll('.cd7-buscar').forEach(btn => {
+    btn.onclick = async () => {
+      const k = Number(btn.dataset.k);
+      const texto = prompt('Escribe parte del nombre de la dependencia (sin importar tildes):', f.destinos[k].texto);
+      if (!texto || !texto.trim()) return;
+      const nuevo = cd7NuevoDestino(texto.trim(), 0.2);
+      if (!nuevo.candidatos.length) return alert('Sin coincidencias. Prueba con otra palabra clave del nombre.');
+      f.destinos[k] = nuevo; cd7PintarFila(f);
+      await cd7ResolverJefe(nuevo); cd7Recalcular(f);
+    };
+  });
+  el.querySelectorAll('.cd7-quitar-destino').forEach(btn => {
+    btn.onclick = () => {
+      if (f.destinos.length <= 1) return cd7QuitarFila(f);   // sin dependencia → sale de la lista
+      f.destinos.splice(Number(btn.dataset.k), 1);
+      cd7Recalcular(f);
+    };
+  });
+  el.querySelector('.cd7-agregar-destino').onclick = async () => {
+    if (!CD7_CATALOGO) return alert('Primero carga la tabla para traer el catálogo de dependencias.');
+    const texto = prompt(`Dependencia adicional para el IDC ${f.idc} (escribe parte del nombre, sin importar tildes):`, '');
+    if (!texto || !texto.trim()) return;
+    const nuevo = cd7NuevoDestino(texto.trim(), 0.2);
+    if (!nuevo.candidatos.length) return alert('Sin coincidencias. Prueba con otra palabra clave del nombre.');
+    nuevo.confirmado = true;   // la eligió el usuario a mano
+    f.destinos.push(nuevo); cd7PintarFila(f);
+    await cd7ResolverJefe(nuevo); cd7Recalcular(f);
+  };
+  el.querySelectorAll('.cd7-aux').forEach(btn => { btn.onclick = () => cd7AccionAuxiliar(f, btn.dataset.accion, btn); });
+  el.querySelector('.cd7-quitar-fila').onclick = () => cd7QuitarFila(f);
+  el.querySelector('.cd7-sel').onchange = (e) => { f.seleccionado = e.target.checked; cd7PintarResumen(); };
+  el.querySelector('.cd7-just').onchange = (e) => { f.incluirJust = e.target.checked; };
+  el.querySelector('.cd7-comentario').addEventListener('input', (e) => {
+    const estabaVacio = !f.comentario.trim();
+    f.comentario = e.target.value;
+    if (estabaVacio !== !f.comentario.trim()) { cd7CalcularEstado(f); cd7PintarResumen(); }
+  });
+  el.querySelector('.cd7-enviar').onclick = () => {
+    const detalle = f.destinos.map((d, k) => `${k + 1}. ${cd7Elegido(d).nombre} — Jefe: ${d.jefe}`).join('\n');
+    if (!confirm(`Reasignar el IDC ${f.idc} a:\n${detalle}\n\nComentario:\n${cd7ComentarioFinal(f)}`)) return;
+    cd7ReasignarFila(f);
+  };
+}
+
+function cd7InyectarPestana() {
+  const cuerpoGeneral = document.querySelector('#PCD_CuerpoGeneral');
+  if (!cuerpoGeneral || document.querySelector('#PCD_CuerpoSec9')) return;
+  const div = document.createElement('div');
+  div.id = 'PCD_CuerpoSec9';
+  div.style.display = 'none';
+  div.innerHTML = `
+    <p style="color:#6b7280; font-size:11px; margin:0 0 6px;">Pega la tabla que generó la IA, tal cual: en Markdown o copiada directamente de la tabla del chat. Columnas: IDC, dependencia, comentario y justificación (opcional). Si un IDC va a varias dependencias, sepáralas con "+" o ";" en la misma celda. También acepta JSON.</p>
+    <textarea id="PCD7_Texto" rows="6" placeholder="| IDC | NOMBRE DEPENDENCIA COMPETENTE | COMENTARIO BREVE | JUSTIFICACIÓN |&#10;|---|---|---|---|&#10;| 2357356 | Subdirección de Salud Ambiental y Cambio Climático | ... | ... |" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; font-size:11px; box-sizing:border-box;"></textarea>
+    <div style="display:flex; gap:6px; margin:6px 0;">
+      <button id="PCD7_Cargar" style="flex:1; padding:8px; background:#4f46e5; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📥 Cargar y validar</button>
+      <button id="PCD7_Limpiar" style="padding:8px 12px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer; font-size:12px;">🗑 Limpiar</button>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:11px; color:#4b5563; margin-bottom:6px;">
+      <label style="cursor:pointer;"><input type="checkbox" id="PCD7_Mayus" checked> Comentario en mayúsculas</label>
+      <label style="cursor:pointer;"><input type="checkbox" id="PCD7_JustTodas"> Agregar justificación en todas</label>
+      <label>Agregar al final:
+        <select id="PCD7_Sufijo" style="padding:3px; font-size:11px; border:1px solid #ccc; border-radius:4px; max-width:220px;">
+          <option value="">Nada</option>
+          ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd7Esc(cd3TruncarTexto(c.etiqueta, 45))}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+    <div id="PCD7_Estado" style="font-size:12px; color:#6b7280; margin-bottom:6px;"></div>
+    <div id="PCD7_Resumen" style="display:none; flex-direction:column; gap:6px; padding:8px; background:#f9fafb; border-radius:6px; margin-bottom:8px;">
+      <div id="PCD7_Conteos" style="font-size:11px; color:#374151;"></div>
+      <div style="display:flex; gap:5px; flex-wrap:wrap;">
+        <button id="PCD7_SelListos" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">☑ Solo los listos</button>
+        <button id="PCD7_SelNinguno" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">☐ Ninguno</button>
+        <button id="PCD7_QuitarBloqueados" title="Quita de la lista los IDC que no se pueden reasignar" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🧹 Quitar bloqueados</button>
+        <button id="PCD7_QuitarReasignados" title="Quita de la lista los IDC ya reasignados" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🧹 Quitar reasignados</button>
+        <button id="PCD7_Reintentar" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🔁 Reintentar fallidos</button>
+        <button id="PCD7_CopiarPendientes" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Copiar IDC no reasignados</button>
+      </div>
+      <button id="PCD7_ReasignarSel" style="padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar seleccionados (0)</button>
+    </div>
+    <div id="PCD7_Lista" style="max-height:520px; overflow-y:auto;"></div>`;
+  cuerpoGeneral.appendChild(div);
+
+  const quitarPorEstado = (estadoObjetivo, etiqueta) => {
+    if (CD7_EN_CURSO) return;
+    const antes = CD7_FILAS.length;
+    CD7_FILAS = CD7_FILAS.filter(f => f.estado !== estadoObjetivo);
+    cd7PintarTodo();
+    document.querySelector('#PCD7_Estado').textContent = `${antes - CD7_FILAS.length} IDC ${etiqueta} quitados de la lista.`;
+  };
+
+  document.querySelector('#PCD7_Cargar').onclick = cd7CargarTabla;
+  document.querySelector('#PCD7_Limpiar').onclick = () => {
+    if (CD7_EN_CURSO) return;
+    CD7_FILAS = []; document.querySelector('#PCD7_Texto').value = ''; document.querySelector('#PCD7_Estado').textContent = ''; cd7PintarTodo();
+  };
+  document.querySelector('#PCD7_JustTodas').onchange = (e) => {
+    CD7_FILAS.forEach(f => { if (f.justificacion && !['ok', 'enviando'].includes(f.estado)) { f.incluirJust = e.target.checked; cd7PintarFila(f); } });
+  };
+  document.querySelector('#PCD7_SelListos').onclick = () => { CD7_FILAS.forEach(f => { f.seleccionado = f.estado === 'listo'; cd7PintarFila(f); }); cd7PintarResumen(); };
+  document.querySelector('#PCD7_SelNinguno').onclick = () => { CD7_FILAS.forEach(f => { f.seleccionado = false; cd7PintarFila(f); }); cd7PintarResumen(); };
+  document.querySelector('#PCD7_QuitarBloqueados').onclick = () => quitarPorEstado('error', 'bloqueados');
+  document.querySelector('#PCD7_QuitarReasignados').onclick = () => quitarPorEstado('ok', 'ya reasignados');
+  document.querySelector('#PCD7_ReasignarSel').onclick = () => cd7ReasignarSeleccionados(false);
+  document.querySelector('#PCD7_Reintentar').onclick = () => cd7ReasignarSeleccionados(true);
+  document.querySelector('#PCD7_CopiarPendientes').onclick = () => {
+    const ids = CD7_FILAS.filter(f => f.estado !== 'ok').map(f => f.idc);
+    if (!ids.length) return alert('Todas las filas ya fueron reasignadas.');
+    cdCopiarTexto(ids.join('\n'));
+    document.querySelector('#PCD7_Estado').textContent = `📋 ${ids.length} IDC copiados.`;
+  };
+  cd7PintarTodo();
 }
 
 // ════════════════════════════════════════════════════════════════
