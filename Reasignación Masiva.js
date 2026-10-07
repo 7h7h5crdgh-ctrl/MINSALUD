@@ -161,7 +161,15 @@ const CD4_LISTAS = {
 // Cuántas reasignaciones/cierres se corren al mismo tiempo en los procesos
 // masivos ("Reasignar clasificados" y "Reasignación Manual"). Pediste 5 en
 // simultáneo: sube o baja este número aquí si más adelante quieres ajustarlo.
-let CONCURRENCIA_MAXIMA = 25;
+let CONCURRENCIA_MAXIMA = 5;          // documentos a la vez (1 a CONCURRENCIA_TOPE)
+const CONCURRENCIA_TOPE = 400;        // máximo permitido en la configuración del panel
+// Modo de los procesos masivos (reasignar/cerrar en lote):
+//  'paquetes' → envía N documentos juntos, espera a que TODO el paquete termine,
+//               hace una pausa y envía el siguiente paquete (más ordenado y
+//               menos propenso a saturar el servidor).
+//  'continuo' → mantiene siempre N en curso: apenas uno termina, entra otro.
+let MODO_MASIVO = 'paquetes';
+let PAUSA_ENTRE_PAQUETES_MS = 1000;   // pausa entre paquetes (solo modo 'paquetes')
 
 // Corre `tareaFn` sobre cada elemento de `items`, con como máximo `limite`
 // tareas en vuelo al mismo tiempo (en vez de esperar a que cada una termine
@@ -187,6 +195,60 @@ async function ejecutarConPool(items, limite, tareaFn, onProgreso) {
 
   const trabajadores = Array.from({ length: Math.min(limite, total) }, () => trabajador());
   await Promise.all(trabajadores);
+}
+
+// Envía `items` en paquetes de `tamano`: todos los del paquete salen al mismo
+// tiempo (Promise.all), se espera a que terminen, pausa y sigue el siguiente.
+// `onProgreso(completados, total, paqueteActual, totalPaquetes)`.
+async function ejecutarPorPaquetes(items, tamano, tareaFn, onProgreso, pausaMs = 0) {
+  const total = items.length;
+  const totalPaquetes = Math.ceil(total / tamano) || 0;
+  let completados = 0;
+  for (let p = 0; p < totalPaquetes; p++) {
+    const paquete = items.slice(p * tamano, (p + 1) * tamano);
+    await Promise.all(paquete.map(async (item) => {
+      try { await tareaFn(item); }
+      finally { completados++; if (onProgreso) onProgreso(completados, total, p + 1, totalPaquetes); }
+    }));
+    if (pausaMs > 0 && p < totalPaquetes - 1) await new Promise(r => setTimeout(r, pausaMs));
+  }
+}
+
+// Punto único para todos los procesos masivos que MODIFICAN documentos: usa
+// la configuración del panel (modo, documentos a la vez y pausa). Además
+// cuenta cuántos documentos están EN CURSO en cada momento, para que el
+// indicador muestre "terminados" y "en curso" por separado.
+let CD_MASIVO_EN_CURSO = 0;
+async function ejecutarMasivo(items, tareaFn, onProgreso) {
+  if (typeof cd2InvalidarCacheBandeja === 'function') cd2InvalidarCacheBandeja();   // bandeja fresca para cada lote
+  const total = items.length;
+  const totalPaquetes = MODO_MASIVO === 'paquetes' ? Math.ceil(total / CONCURRENCIA_MAXIMA) : 0;
+  let completados = 0;
+  CD_MASIVO_EN_CURSO = 0;
+  const avisar = (idx) => {
+    const paquete = totalPaquetes ? Math.floor(idx / CONCURRENCIA_MAXIMA) + 1 : 0;
+    if (onProgreso) onProgreso(completados, total, paquete, totalPaquetes);
+  };
+  const envueltos = items.map((item, idx) => ({ item, idx }));
+  const tarea = async ({ item, idx }) => {
+    CD_MASIVO_EN_CURSO++; avisar(idx);
+    try { await tareaFn(item); }
+    finally { CD_MASIVO_EN_CURSO--; completados++; avisar(idx); }
+  };
+  if (MODO_MASIVO === 'paquetes') {
+    await ejecutarPorPaquetes(envueltos, CONCURRENCIA_MAXIMA, tarea, null, PAUSA_ENTRE_PAQUETES_MS);
+  } else {
+    await ejecutarConPool(envueltos, CONCURRENCIA_MAXIMA, tarea, null);
+  }
+  CD_MASIVO_EN_CURSO = 0;
+}
+
+// Texto de progreso común para los procesos masivos: "terminados / total" y,
+// aparte, cuántos se están procesando simultáneamente en ese momento.
+function textoProgresoMasivo(completados, total, paquete, totalPaquetes) {
+  const enCurso = CD_MASIVO_EN_CURSO;
+  const paq = MODO_MASIVO === 'paquetes' && totalPaquetes ? ` · paquete ${paquete}/${totalPaquetes}` : '';
+  return `⏳ Terminados ${completados}/${total} · 🔄 ${enCurso} procesándose ahora${paq} (máx. ${CONCURRENCIA_MAXIMA} a la vez)`;
 }
 
 // Prueba de carga NO destructiva: dispara varias llamadas de solo lectura
@@ -1061,14 +1123,124 @@ function cdBitacoraExportarExcel() {
   URL.revokeObjectURL(url);
 }
 
+// POST con reintentos: si el servidor responde 500 o una página HTML de error
+// (señal de saturación), espera y reintenta en vez de fallar de inmediato.
+const CD2_REINTENTOS = 4;
 async function cd2Post(url, paramsObj) {
-  const body = new URLSearchParams(paramsObj);
-  const resp = await fetch(url, {
-    method: 'POST', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
-    body: body.toString(),
+  const body = new URLSearchParams(paramsObj).toString();
+  let ultimoError;
+  for (let intento = 1; intento <= CD2_REINTENTOS; intento++) {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      });
+      const texto = await resp.text();
+      if (!resp.ok || texto.trim().startsWith('<')) throw new Error(`Servidor saturado (HTTP ${resp.status})`);
+      return JSON.parse(texto);
+    } catch (e) {
+      ultimoError = e;
+      if (intento < CD2_REINTENTOS) await new Promise(r => setTimeout(r, 800 * intento + Math.random() * 500));
+    }
+  }
+  throw ultimoError;
+}
+
+// ════════════════════════════════════════════════════════════════
+// ═══ MODO RÁPIDO: menos peticiones por documento ═══
+// Sin modo rápido, cada reasignación hace ~5 peticiones seguidas: buscar en la
+// bandeja → jefe → validar → tramitar → verificar. Con modo rápido:
+//  · la bandeja se descarga UNA sola vez para todo el lote (no una por IDC),
+//  · se omite la validación previa (solo se registraba en consola, no decidía nada),
+//  · la verificación final se agrupa: una sola consulta confirma todo el paquete.
+// Así cada documento queda prácticamente en UNA petición (tramitar).
+// ════════════════════════════════════════════════════════════════
+let MODO_RAPIDO = true;
+const CD2_TTL_BANDEJA_MS = 60000;
+let CD2_CACHE_BANDEJA = null;   // { promesa, ts }
+let CD2_VERIF_COLA = null;      // verificación agrupada en curso
+
+function cd2ParamsBandeja(idControl) {
+  return {
+    sort: '', group: '', filter: '', ESTADOFLUJO: 'SIN INICIAR TRAMITE', TRAMITADO: 'NO',
+    ANIO: '', MES: '', DIA: '', IDTIPOLOGIADOCUMENTAL: 0, PRIORIDAD: '', IDCLASE: 0,
+    IDCONTROL: idControl, RADICADO: '', TIPOPROCESO: '', IDMODALIDADCONTRATACION: 0,
+    IDREGIONAL: 0, IDCENTRO: 0, NUMPROCESO: '', CHCKFECHVENC: 'false', IDFUNCIONARIO_VBG: 0,
+    DESCRIPCION: '', ASUNTO: '', FILTROPQR: 'NO',
+  };
+}
+
+function cd2InvalidarCacheBandeja() { CD2_CACHE_BANDEJA = null; }
+
+// Bandeja completa (una sola descarga compartida por todo el lote), indexada
+// por IDC y por radicado. Cada registro se entrega UNA vez y se retira del
+// mapa, para que nunca se tramite dos veces el mismo documento con datos viejos.
+async function cd2ObtenerMapaBandeja() {
+  const ahora = Date.now();
+  if (CD2_CACHE_BANDEJA && ahora - CD2_CACHE_BANDEJA.ts < CD2_TTL_BANDEJA_MS) return CD2_CACHE_BANDEJA.promesa;
+  const promesa = cd2Post(CD2_CONFIG.urlBandeja, cd2ParamsBandeja(0)).then(data => {
+    const mapa = new Map();
+    ((data && data.Data) || []).forEach(r => {
+      mapa.set(String(r.IDDOCUMENTO), r);
+      if (r.RADICADO) mapa.set(String(r.RADICADO), r);
+    });
+    return mapa;
   });
-  return resp.json();
+  CD2_CACHE_BANDEJA = { promesa, ts: ahora };
+  promesa.catch(() => { if (CD2_CACHE_BANDEJA && CD2_CACHE_BANDEJA.promesa === promesa) CD2_CACHE_BANDEJA = null; });
+  return promesa;
+}
+
+// Verificación agrupada: todos los documentos que terminan casi al mismo
+// tiempo comparten UNA consulta de la bandeja. true = salió, false = sigue,
+// null = no se pudo consultar.
+function cd2VerificarEnBloque(id) {
+  if (!CD2_VERIF_COLA) {
+    let resolver;
+    const cola = { promesa: new Promise(r => { resolver = r; }) };
+    setTimeout(async () => {
+      if (CD2_VERIF_COLA === cola) CD2_VERIF_COLA = null;
+      try {
+        const data = await cd2Post(CD2_CONFIG.urlBandeja, cd2ParamsBandeja(0));
+        const presentes = new Set();
+        ((data && data.Data) || []).forEach(r => { presentes.add(String(r.IDDOCUMENTO)); if (r.RADICADO) presentes.add(String(r.RADICADO)); });
+        resolver(presentes);
+      } catch (e) { resolver(null); }
+    }, 400);
+    CD2_VERIF_COLA = cola;
+  }
+  return CD2_VERIF_COLA.promesa.then(presentes => presentes ? !presentes.has(String(id).trim()) : null);
+}
+
+// Confirma si el documento salió de tu bandeja: true = salió, false = sigue
+// ahí, null = no se pudo verificar (el servidor falló). Un error del servidor
+// NO se cuenta como éxito.
+async function cd2VerificarSalida(idDocumento) {
+  if (MODO_RAPIDO) {
+    const r = await cd2VerificarEnBloque(idDocumento);
+    if (r !== null) return r;
+  }
+  try {
+    await cd2BuscarEnBandeja(idDocumento, { forzarConsulta: true });
+    return false;
+  } catch (e) {
+    return e.noEncontrado ? true : null;
+  }
+}
+
+// Mide si ControlDoc atiende de verdad varias peticiones a la vez desde tu
+// sesión (solo lectura: consulta la bandeja con un IDC inexistente).
+async function cd2MedirSimultaneidad(n) {
+  const consulta = () => cd2Post(CD2_CONFIG.urlBandeja, cd2ParamsBandeja(1));
+  let t = performance.now();
+  await consulta(); await consulta();
+  const tUna = (performance.now() - t) / 2;
+  t = performance.now();
+  await Promise.all(Array.from({ length: n }, consulta));
+  const tGrupo = performance.now() - t;
+  const factor = tGrupo / tUna;
+  return { n, tUna: Math.round(tUna), tGrupo: Math.round(tGrupo), factor, paralelo: factor < n * 0.6 };
 }
 
 function cd2Serializar(obj, prefijo, params) {
@@ -1080,17 +1252,23 @@ function cd2Serializar(obj, prefijo, params) {
   return params;
 }
 
-async function cd2BuscarEnBandeja(idDocumento) {
-  const params = {
-    sort: '', group: '', filter: '', ESTADOFLUJO: 'SIN INICIAR TRAMITE', TRAMITADO: 'NO',
-    ANIO: '', MES: '', DIA: '', IDTIPOLOGIADOCUMENTAL: 0, PRIORIDAD: '', IDCLASE: 0,
-    IDCONTROL: idDocumento, RADICADO: '', TIPOPROCESO: '', IDMODALIDADCONTRATACION: 0,
-    IDREGIONAL: 0, IDCENTRO: 0, NUMPROCESO: '', CHCKFECHVENC: 'false', IDFUNCIONARIO_VBG: 0,
-    DESCRIPCION: '', ASUNTO: '', FILTROPQR: 'NO',
-  };
-  const data = await cd2Post(CD2_CONFIG.urlBandeja, params);
+async function cd2BuscarEnBandeja(idDocumento, { forzarConsulta = false } = {}) {
+  if (MODO_RAPIDO && !forzarConsulta) {
+    try {
+      const mapa = await cd2ObtenerMapaBandeja();
+      const clave = String(idDocumento).trim();
+      const r = mapa.get(clave);
+      if (r) {
+        mapa.delete(String(r.IDDOCUMENTO)); if (r.RADICADO) mapa.delete(String(r.RADICADO));
+        return r;
+      }
+    } catch (e) { /* si falla la descarga completa, se consulta el documento suelto */ }
+  }
+  const data = await cd2Post(CD2_CONFIG.urlBandeja, cd2ParamsBandeja(idDocumento));
   if (!data || !data.Data || !data.Data.length) {
-    throw new Error(`No se encontró el documento ${idDocumento} pendiente en la bandeja (¿ya fue tramitado o no está asignado a ti?)`);
+    const err = new Error(`No se encontró el documento ${idDocumento} pendiente en la bandeja (¿ya fue tramitado o no está asignado a ti?)`);
+    err.noEncontrado = true;
+    throw err;
   }
   return data.Data[0];
 }
@@ -1100,6 +1278,13 @@ async function cd2ObtenerJefe(idOficina, idUnidad) {
   idUnidad = idUnidad ?? CD2_IDUNIDAD; // funciona tanto si idUnidad es undefined como si es null
   const claveCache = `${idUnidad}-${idOficina}`;
   if (cd2CacheJefes[claveCache]) return cd2CacheJefes[claveCache];
+  const promesa = cd2ConsultarJefe(idOficina, idUnidad);
+  cd2CacheJefes[claveCache] = promesa;
+  promesa.catch(() => { if (cd2CacheJefes[claveCache] === promesa) delete cd2CacheJefes[claveCache]; });
+  return promesa;
+}
+
+async function cd2ConsultarJefe(idOficina, idUnidad) {
   const params = {
     IDUNIDADADMINISTRATIVA: idUnidad, IDOFICINAPRODUCTORA: idOficina, IDCARGO: 2,
     NOMBRES: '', APELLIDOS: '', ListFuncSel: '[]', ListFuncCop: '[]',
@@ -1109,7 +1294,6 @@ async function cd2ObtenerJefe(idOficina, idUnidad) {
   const resp = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
   const data = await resp.json();
   if (!data || !data.length) throw new Error(`No se encontró jefe para la oficina ${idOficina}`);
-  cd2CacheJefes[claveCache] = data[0];
   return data[0];
 }
 
@@ -1172,7 +1356,7 @@ async function cd2ReasignarADestino(idDocumento, destino, comentario) {
   const jefe = await cd2ObtenerJefe(destino.idOficina, destino.idUnidad);
   const funcionario = { ...jefe, IDINSTRUCCION: 8, DIAS: false, COMENTARIO: comentario, SELECCIONADO: true };
 
-  const validacion = await cd2ValidarFuncionario(funcionario);
+  const validacion = MODO_RAPIDO ? { omitida: 'modo rápido' } : await cd2ValidarFuncionario(funcionario);
   console.log(`[CD2] Validación funcionario (${jefe.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, validacion);
 
   const data = await cd2EnviarTramite(registro, [funcionario], comentario);
@@ -1182,12 +1366,7 @@ async function cd2ReasignarADestino(idDocumento, destino, comentario) {
   // "SIN INICIAR TRAMITE", significa que el trámite sí lo movió de verdad —
   // esto es más confiable que la validación previa, que puede decir
   // "funcionario inactivo" incluso cuando el trámite sí se completa bien.
-  let movioBandeja = false;
-  try {
-    await cd2BuscarEnBandeja(idDocumento);
-  } catch (e) {
-    movioBandeja = true;
-  }
+  const movioBandeja = await cd2VerificarSalida(idDocumento);
 
   return { idDocumento, radicado: registro.RADICADO, asunto: registro.DESCRIPCION || '', subdireccion: destino.nombre, jefe: jefe.NOMBRESAPELLIDOS, resultado: data, validacion, movioBandeja };
 }
@@ -1204,19 +1383,21 @@ async function cd2ReasignarDocumento(idDocumento, claveSubdireccion, comentario)
 // Reasigna un IDC a VARIAS dependencias al mismo tiempo, en un solo POST
 // (el mismo mecanismo que usa "Buscador de Usuarios" en la interfaz cuando
 // seleccionas varios destinatarios y le das "Agregar Todos").
-// Reasigna a VARIOS destinos ya resueltos ({ idOficina, idUnidad, nombre })
-// en un solo POST — igual mecanismo que "Agregar Todos" en el buscador de
-// usuarios nativo. La usan tanto cd2ReasignarDocumentoMultiple (destinos de
-// CONFIG_DEPENDENCIAS) como el buscador ad-hoc (destinos encontrados al vuelo).
+// Reasigna a VARIOS destinos ya resueltos ({ idOficina, idUnidad, nombre }
+// o { funcionario, nombre } para un funcionario específico) en un solo POST —
+// igual mecanismo que "Agregar Todos" en el buscador de usuarios nativo. La
+// usan tanto cd2ReasignarDocumentoMultiple (destinos de CONFIG_DEPENDENCIAS)
+// como el buscador ad-hoc (dependencias o funcionarios encontrados al vuelo).
 async function cd2ReasignarADestinos(idDocumento, destinosResueltos, comentario) {
   for (const d of destinosResueltos) {
-    if (d.idOficina == null) throw new Error(`Falta idOficina para "${d.nombre}".`);
+    if (!d.funcionario && d.idOficina == null) throw new Error(`Falta idOficina para "${d.nombre}".`);
   }
   const registro = await cd2BuscarEnBandeja(idDocumento);
 
   const destinos = [];
   for (const d of destinosResueltos) {
-    const jefe = await cd2ObtenerJefe(d.idOficina, d.idUnidad);
+    // Si el destino es un funcionario específico, se usa tal cual; si es una dependencia, su jefe.
+    const jefe = d.funcionario || await cd2ObtenerJefe(d.idOficina, d.idUnidad);
     destinos.push({ d, jefe });
   }
 
@@ -1224,7 +1405,7 @@ async function cd2ReasignarADestinos(idDocumento, destinosResueltos, comentario)
 
   const validaciones = [];
   for (const funcionario of listaFuncionarios) {
-    const v = await cd2ValidarFuncionario(funcionario);
+    const v = MODO_RAPIDO ? { omitida: 'modo rápido' } : await cd2ValidarFuncionario(funcionario);
     validaciones.push({ nombre: funcionario.NOMBRESAPELLIDOS, validacion: v });
     console.log(`[CD2] Validación funcionario (${funcionario.NOMBRESAPELLIDOS}) para IDC ${idDocumento}:`, v);
   }
@@ -1232,12 +1413,7 @@ async function cd2ReasignarADestinos(idDocumento, destinosResueltos, comentario)
   const data = await cd2EnviarTramite(registro, listaFuncionarios, comentario);
   console.log(`[CD2] Respuesta TRAMITARENUNSOLOMETODO (multi-destino) para IDC ${idDocumento}:`, data);
 
-  let movioBandeja = false;
-  try {
-    await cd2BuscarEnBandeja(idDocumento);
-  } catch (e) {
-    movioBandeja = true;
-  }
+  const movioBandeja = await cd2VerificarSalida(idDocumento);
 
   return {
     idDocumento, radicado: registro.RADICADO, asunto: registro.DESCRIPCION || '',
@@ -1260,7 +1436,7 @@ async function cd2ReasignarDocumentoMultiple(idDocumento, clavesSubdirecciones, 
 
 async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgreso) {
   const resultados = { exitosos: [], fallidos: [] };
-  await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
+  await ejecutarMasivo(listaIds, async (idRaw) => {
     const id = idRaw.trim();
     try {
       const r = await cd2ReasignarDocumento(id, claveSubdireccion, comentario);
@@ -1276,7 +1452,7 @@ async function cd2ReasignarLote(listaIds, claveSubdireccion, comentario, onProgr
 
 async function cd2ReasignarLoteMultiple(listaIds, clavesSubdirecciones, comentario, onProgreso) {
   const resultados = { exitosos: [], fallidos: [] };
-  await ejecutarConPool(listaIds, CONCURRENCIA_MAXIMA, async (idRaw) => {
+  await ejecutarMasivo(listaIds, async (idRaw) => {
     const id = idRaw.trim();
     try {
       const r = await cd2ReasignarDocumentoMultiple(id, clavesSubdirecciones, comentario);
@@ -1313,12 +1489,7 @@ async function cd2CerrarPorComentario(idDocumento, comentario) {
   console.log(`[CD2] Respuesta cierre por comentario para IDC ${idDocumento}:`, data);
 
   // Misma verificación real: si ya no está en la bandeja, sí se cerró.
-  let movioBandeja = false;
-  try {
-    await cd2BuscarEnBandeja(idDocumento);
-  } catch (e) {
-    movioBandeja = true;
-  }
+  const movioBandeja = await cd2VerificarSalida(idDocumento);
 
   return { idDocumento, radicado: registro.RADICADO, resultado: data, movioBandeja };
 }
@@ -1892,7 +2063,7 @@ function cd3RenderizarResultados() {
         <button data-idx="${i}" class="cd3-btn-adjuntos" title="${enviando ? tituloEnviando : 'Descargar Adjuntos'}" style="${accionBtn} background:#e5e7eb; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>📎 Adjuntos</button>
         <button data-idx="${i}" class="cd3-btn-reasignar" title="${enviando ? tituloEnviando : (soloLectura ? tituloBloqueo : 'Reasignar')}" style="${accionBtn} background:#111827; color:#fff; cursor:${(soloLectura || enviando) ? 'not-allowed' : 'pointer'}; ${(soloLectura || enviando) ? 'opacity:0.4;' : ''}" ${(!d.manual || soloLectura || enviando) ? 'disabled' : ''}>🚀 Reasignar</button>
         <button data-idx="${i}" class="cd3-btn-cerrar" title="${enviando ? tituloEnviando : (soloLectura ? tituloBloqueo : 'Cerrar por comentario (comunicación informativa)')}" style="${accionBtn} background:#0d9488; color:#fff; cursor:${(soloLectura || enviando) ? 'not-allowed' : 'pointer'}; ${(soloLectura || enviando) ? 'opacity:0.4;' : ''}" ${(soloLectura || enviando) ? 'disabled' : ''}>🗂️ Cerrar</button>
-        <button data-idx="${i}" class="cd3-btn-buscar-destino" title="${enviando ? tituloEnviando : 'Abrir la pestaña 🔎 Buscar con este IDC ya listo, para reasignarlo a una dependencia fuera de tu lista'}" style="${accionBtn} background:#7c3aed; color:#fff; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>🔎 Buscar destino</button>
+        <button data-idx="${i}" class="cd3-btn-buscar-destino" title="${enviando ? tituloEnviando : 'Abrir la pestaña 🔎 Buscar con este IDC ya listo, para reasignarlo a una dependencia o funcionario fuera de tu lista'}" style="${accionBtn} background:#7c3aed; color:#fff; ${enviando ? 'cursor:not-allowed; opacity:0.5;' : ''}" ${enviando ? 'disabled' : ''}>🔎 Buscar destino</button>
         <span title="${d.mensajeEstado || ''}" style="font-size:14px;">${iconoEstado}</span>
       </div>
 
@@ -2107,7 +2278,7 @@ async function cd3ReasignarTodosLosClasificados() {
 
   let advertencias = 0;
 
-  await ejecutarConPool(tareas, CONCURRENCIA_MAXIMA, async ({ doc, clave }) => {
+  await ejecutarMasivo(tareas, async ({ doc, clave }) => {
     doc.estadoEnvio = 'enviando'; cd3RenderizarResultados();
     try {
       const r = await cd2ReasignarDocumento(String(doc.idc), clave, comentario);
@@ -2122,8 +2293,8 @@ async function cd3ReasignarTodosLosClasificados() {
       if (doc.estadoEnvio === 'ok') cd3ProgramarLimpieza(doc);
     } catch (e) { doc.estadoEnvio = 'error'; doc.mensajeEstado = e.message; }
     cd3RenderizarResultados();
-  }, (completados, total) => {
-    if (estado) estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  }, (completados, total, paquete, totalPaquetes) => {
+    if (estado) estado.textContent = textoProgresoMasivo(completados, total, paquete, totalPaquetes);
   });
 
   const exitosos = pendientes.filter(d => d.estadoEnvio === 'ok').length;
@@ -2156,13 +2327,13 @@ async function cd3ReasignarManualMultiple() {
   if (!comentario) return alert('El comentario no puede quedar vacío.');
 
   const textoOriginal = btn.textContent;
-  estado.textContent = `⏳ Procesando 0/${lista.length}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  estado.textContent = textoProgresoMasivo(0, lista.length, 1, Math.ceil(lista.length / CONCURRENCIA_MAXIMA));
   btn.disabled = true;
   btn.style.opacity = '0.6';
   btn.style.cursor = 'not-allowed';
 
-  const resultados = await cd2ReasignarLoteMultiple(lista, clavesSeleccionadas, comentario, (completados, total) => {
-    estado.textContent = `⏳ Procesando ${completados}/${total}... (${CONCURRENCIA_MAXIMA} a la vez)`;
+  const resultados = await cd2ReasignarLoteMultiple(lista, clavesSeleccionadas, comentario, (completados, total, paquete, totalPaquetes) => {
+    estado.textContent = textoProgresoMasivo(completados, total, paquete, totalPaquetes);
   });
 
   btn.disabled = false;
@@ -2188,12 +2359,14 @@ function cd3TruncarTexto(str, n) {
 // ════════════════════════════════════════════════════════════════
 // ═══ BUSCADOR AD-HOC DE DEPENDENCIAS / FUNCIONARIOS ═══
 // Para reasignar hacia oficinas que NO están en CONFIG_DEPENDENCIAS —
-// PQRSDF que salen de la competencia de la Dirección y sus subdirecciones.
+// PQRSDF que salen de la competencia de la Dirección y sus subdirecciones —
+// o directamente a un funcionario específico (no al jefe de su oficina).
 // ════════════════════════════════════════════════════════════════
 
 let CD3_RESULTADOS_OFICINA = [];   // últimas oficinas encontradas
 
-// Destinos elegidos con "📥 Usar para reasignar" (puede haber varios).
+// Destinos elegidos con "📥 Usar para reasignar" (puede haber varios):
+// dependencias ({ idOficina, idUnidad, nombre }) o funcionarios ({ funcionario, nombre }).
 let CD3_DESTINOS_ADHOC = [];
 
 function cd3PintarDestinosAdHoc() {
@@ -2263,7 +2436,7 @@ async function cd3BuscarOficinaUI() {
       const i = Number(btn.dataset.idx);
       const o = CD3_RESULTADOS_OFICINA[i];
       const nuevo = { idOficina: o.IDOFICINAPRODUCTORA, idUnidad: o.IDUNIDADADMINISTRATIVA, nombre: o.NOMBRE };
-      if (!CD3_DESTINOS_ADHOC.some(d => d.idOficina === nuevo.idOficina && d.idUnidad === nuevo.idUnidad)) {
+      if (!CD3_DESTINOS_ADHOC.some(d => !d.funcionario && d.idOficina === nuevo.idOficina && d.idUnidad === nuevo.idUnidad)) {
         CD3_DESTINOS_ADHOC.push(nuevo);
       }
       cd3PintarDestinosAdHoc();
@@ -2271,6 +2444,72 @@ async function cd3BuscarOficinaUI() {
       document.querySelector('#PCD_BuscarOficinaTexto').value = '';
       cont.innerHTML = '';
       CD3_RESULTADOS_OFICINA = [];
+    };
+  });
+}
+
+// ── Reasignar a un funcionario específico (no al jefe de la oficina) ──
+let CD3_RESULTADOS_FUNCIONARIO = [];
+
+// Igual que cd3BuscarFuncionariosGlobal, pero conserva el registro completo,
+// que es el que exige TRAMITARENUNSOLOMETODO para asignar.
+async function cd3BuscarFuncionariosCrudo(texto) {
+  const palabras = texto.trim().toUpperCase().split(/\s+/).filter(p => p.length >= 2);
+  if (!palabras.length) return [];
+  const clave = palabras.slice().sort((a, b) => b.length - a.length)[0];
+  // Mismos parámetros que usa la búsqueda del jefe, incluido BUSCARINACTIVO=NO,
+  // para no ofrecer usuarios inactivos como destino.
+  const base = { IDUNIDADADMINISTRATIVA: '', IDOFICINAPRODUCTORA: '', IDCARGO: '', ListFuncSel: '[]', ListFuncCop: '[]', IDGRUPOTRABAJO: 0, PROCESOSENA: '', PROCEDENCIA: '', BUSCARINACTIVO: 'NO', API: '' };
+  const respuestas = await Promise.allSettled([
+    cd3ConsultarFuncionarios({ ...base, NOMBRES: clave, APELLIDOS: '' }),
+    cd3ConsultarFuncionarios({ ...base, NOMBRES: '', APELLIDOS: clave }),
+  ]);
+  if (respuestas.every(r => r.status === 'rejected')) throw respuestas[0].reason;
+  const requeridas = palabras.map(cd3Normalizar);
+  const vistos = new Set();
+  return respuestas
+    .flatMap(r => (r.status === 'fulfilled' && Array.isArray(r.value)) ? r.value : [])
+    .filter(f => f && f.IDFUNCIONARIO && !vistos.has(Number(f.IDFUNCIONARIO)) && vistos.add(Number(f.IDFUNCIONARIO)))
+    .map(f => ({ resumen: cd3ResumirFuncionario(f), crudo: f }))
+    .filter(x => { const n = cd3Normalizar(x.resumen.nombre); return requeridas.every(p => n.includes(p)); })
+    .sort((a, b) => a.resumen.nombre.localeCompare(b.resumen.nombre, 'es'));
+}
+
+async function cd3BuscarFuncionarioDestinoUI() {
+  const input = document.querySelector('#PCD_BuscarFuncDestinoTexto');
+  const cont = document.querySelector('#PCD_ResultadosFuncDestino');
+  const texto = input.value.trim();
+  if (texto.replace(/\s+/g, '').length < 2) return alert('Escribe al menos 2 letras del nombre o apellido.');
+  cont.innerHTML = '<div style="color:#6b7280; font-size:11px;">⏳ Buscando en toda la entidad...</div>';
+  try {
+    CD3_RESULTADOS_FUNCIONARIO = await cd3BuscarFuncionariosCrudo(texto);
+  } catch (e) {
+    cont.innerHTML = `<div style="color:#ea580c; font-size:11px;">❌ ${cdEscaparHtml(e.message)}</div>`;
+    return;
+  }
+  if (!CD3_RESULTADOS_FUNCIONARIO.length) {
+    cont.innerHTML = '<div style="color:#9ca3af; font-size:11px;">Sin coincidencias. Prueba con una sola palabra o sin tildes.</div>';
+    return;
+  }
+  const visibles = CD3_RESULTADOS_FUNCIONARIO.slice(0, 20);
+  cont.innerHTML = visibles.map(({ resumen: f }, i) => `
+    <div style="border:1px solid #e5e7eb; border-radius:6px; padding:6px 8px; margin-bottom:6px; font-size:11px;">
+      <div style="font-weight:bold;">${cdEscaparHtml(f.nombre)} <span style="color:#9ca3af; font-weight:normal;">(ID ${f.idFuncionario})</span></div>
+      <div style="color:#6b7280;">${cdEscaparHtml(f.cargo)}${f.oficina ? ' · ' + cdEscaparHtml(f.oficina) : ''}</div>
+      <button data-idx="${i}" class="cd3-btn-usar-funcionario" style="margin-top:5px; padding:3px 6px; font-size:10px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer;">📥 Usar para reasignar</button>
+    </div>`).join('') +
+    (CD3_RESULTADOS_FUNCIONARIO.length > 20 ? `<div style="font-size:10px; color:#9ca3af;">Se muestran 20 de ${CD3_RESULTADOS_FUNCIONARIO.length}: afina la búsqueda.</div>` : '');
+
+  cont.querySelectorAll('.cd3-btn-usar-funcionario').forEach(btn => {
+    btn.onclick = () => {
+      const { resumen, crudo } = CD3_RESULTADOS_FUNCIONARIO[Number(btn.dataset.idx)];
+      if (!CD3_DESTINOS_ADHOC.some(d => d.funcionario && Number(d.funcionario.IDFUNCIONARIO) === resumen.idFuncionario)) {
+        CD3_DESTINOS_ADHOC.push({ nombre: `👤 ${resumen.nombre}${resumen.oficina ? ' — ' + resumen.oficina : ''}`, funcionario: crudo });
+      }
+      cd3PintarDestinosAdHoc();
+      input.value = '';
+      cont.innerHTML = '';
+      CD3_RESULTADOS_FUNCIONARIO = [];
     };
   });
 }
@@ -2283,7 +2522,7 @@ async function cd3ReasignarAdHoc() {
   const estado = document.querySelector('#PCD_EstadoAdHoc');
   const btn = document.querySelector('#PCD_ReasignarAdHoc');
 
-  if (!CD3_DESTINOS_ADHOC.length) return alert('Primero busca una dependencia arriba y pulsa "📥 Usar para reasignar" (puedes elegir varias).');
+  if (!CD3_DESTINOS_ADHOC.length) return alert('Primero elige al menos un destino arriba (dependencia o funcionario) con "📥 Usar para reasignar".');
   if (!idsRaw) return alert('Ingresa al menos un IDC o Radicado.');
   const lista = idsRaw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
   const comentarioPorDefecto = document.querySelector('#PCD_ComentarioReasignacion')?.value.trim() || CD2_COMENTARIO_REASIGNACION_DEFAULT;
@@ -2300,17 +2539,17 @@ async function cd3ReasignarAdHoc() {
   estado.textContent = `⏳ Procesando 0/${lista.length}...`;
 
   let exitosos = 0, fallidos = 0;
-  await ejecutarConPool(lista, CONCURRENCIA_MAXIMA, async (idRaw) => {
+  await ejecutarMasivo(lista, async (idRaw) => {
     const id = idRaw.trim();
     try {
       const r = await cd2ReasignarADestinos(id, destinos, comentario);
       const funcionarios = r.destinos.map(d => d.jefe).join(' + ');
-      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, asunto: r.asunto, destino: nombreDestinos, funcionario: funcionarios, comentario, resultado: r.movioBandeja ? 'OK' : 'ERROR', detalleResultado: r.movioBandeja ? '' : 'No se movió de la bandeja' });
+      cdBitacoraRegistrar({ accion: 'Reasignación (ad-hoc)', idc: id, radicado: r.radicado, asunto: r.asunto, destino: nombreDestinos, funcionario: funcionarios, comentario, resultado: r.movioBandeja ? 'OK' : (r.movioBandeja === null ? 'SIN VERIFICAR' : 'ERROR'), detalleResultado: r.movioBandeja ? '' : (r.movioBandeja === null ? 'El servidor no respondió al verificar: revisar en ControlDoc' : 'No se movió de la bandeja') });
       cd3SincronizarTrasAccionExterna(id, r.movioBandeja);
       if (r.movioBandeja) exitosos++; else fallidos++;
       console.log(r.movioBandeja ? '✅' : '❌', id, '→', nombreDestinos, r.resultado);
     } catch (e) { fallidos++; console.log('❌', id, e.message); }
-  }, (completados, total) => { estado.textContent = `⏳ Procesando ${completados}/${total}...`; });
+  }, (completados, total, paquete, totalPaquetes) => { estado.textContent = textoProgresoMasivo(completados, total, paquete, totalPaquetes); });
 
   btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer'; btn.textContent = textoOriginal;
   estado.textContent = `✅ ${exitosos} exitosos, ❌ ${fallidos} fallidos. Revisa la consola para detalle.`;
@@ -3193,13 +3432,6 @@ async function tdMostrarDestinatarios(idTarea) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// ═══ PESTAÑAS DEL CLASIFICADOR ═══
-// Reemplaza el acordeón de secciones: solo una parte del panel está visible
-// a la vez (como pestañas de navegador), para leer sin scroll y sin
-// perderse. Cambia solo la navegación — cada sección hace exactamente lo
-// mismo que antes.
-// ════════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════════
 // ═══ DESCARGA MASIVA (PDF, adjuntos, o ambos, para varios IDC) ═══
 // Reutiliza cd4CrearZip/cd4DescargarBlob (genéricas) y la misma lógica de
 // "no descomprimir el zip de adjuntos" de cd3DescargarPdfYAdjuntosZip: cada
@@ -3534,7 +3766,10 @@ function cd7ResumirFila(f) {
     radicado: f.RADICADO || f.RADICADOSENLACE || '', asunto: f.ASUNTO || '',
     de: f.FUNCIONARIOCREO || '', instruccion: String(f.INSTRUCCION || '').toUpperCase(), estadoTarea: f.ESTADOTAREA || '',
     orden: f.ORDEN, leido: f.LEIDO === true || String(f.LEIDO || '').toUpperCase() === 'SI',
-    adjuntos: Number(f.NUMADJUNTOS) || 0, numObs: Number(f.NUMOBSERVACION) || 0, obs: String(f.OBSERVACIONES || ''),
+    adjuntos: Number(f.NUMADJUNTOS) || 0, // referencia de la lista; NO es confiable (llega en 0 aunque haya adjuntos): se muestra adjuntosReal
+    adjuntosReal: null, adjuntosId: null, // conteo real (null = contando · número · 'error' · 'sin-contar') y el ID del que cuelgan
+    numObs: Number(f.NUMOBSERVACION) || 0, obs: String(f.OBSERVACIONES || ''),
+    tipoDoc: f.TIPODOC, // 0 = documento Word (D), 1 = Excel (X), 2 = PDF (P); lo usa "Aprobar para firma"
     vence: cd4ParsearFecha(f.FECHAVENCE), creacion, creacionMs: cd7FechaMs(creacion),
     nombreArchivo: f.NOMBREARCHIVO || '', trazaAbierta: false,
   };
@@ -3546,6 +3781,403 @@ async function cd7ConsultarLista(clave, idFuncionario) {
   const j = await resp.json();
   const datos = Array.isArray(j) ? j : ((j && (j.Data || j.OBJETOS)) || []);
   return datos.map(cd7ResumirFila);
+}
+
+// ── Adjuntos reales ──
+// El campo NUMADJUNTOS de la lista llega en 0 aunque haya archivos, así que se
+// consulta la misma ventana nativa "Adjuntos" que la pestaña Tareas. Los
+// adjuntos cuelgan del ID TAREA (IDTAREAINICIAL); si ahí no hay, se prueba el
+// del paso actual (IDTAREADOC), igual que hace el botón 📎.
+async function cd7ContarAdjuntosFila(f) {
+  const ids = [...new Set([f.idInicial, f.idTarea].filter(Boolean).map(String))];
+  let huboError = false;
+  for (const id of ids) {
+    try {
+      const n = (await cd4ObtenerAdjuntos(id)).length;
+      if (n > 0) { f.adjuntosReal = n; f.adjuntosId = id; return n; }
+    } catch (e) { huboError = true; }
+  }
+  if (huboError) { f.adjuntosReal = 'error'; f.adjuntosId = null; return 'error'; }
+  f.adjuntosReal = 0; f.adjuntosId = null; return 0;
+}
+
+// Texto del contador 📎 de la tarjeta según el estado del conteo.
+function cd7TextoAdjuntos(f) {
+  const n = f.adjuntosReal;
+  return typeof n === 'number' ? String(n) : (n === 'error' ? '?' : (n === 'sin-contar' ? '–' : '…'));
+}
+
+// Refresca solo el contador y el botón 📎 de esa tarjeta (sin repintar la lista).
+function cd7ActualizarAdjuntosEnPantalla(f) {
+  const tarjeta = [...document.querySelectorAll('#PCD_SegLista > div[data-idtarea]')].find(el => el.dataset.idtarea === String(f.idTarea));
+  if (!tarjeta) return;
+  const num = tarjeta.querySelector('.cd7-adj-n'); if (num) num.textContent = '📎 ' + cd7TextoAdjuntos(f);
+  const b = tarjeta.querySelector('.cd7-btn-adjuntos'); if (!b) return;
+  const e = cd4EstadoBotonAdjuntos(f);
+  b.textContent = '📎 ' + e.texto; b.style.background = e.fondo; b.style.color = e.color;
+  b.style.cursor = e.activo ? 'pointer' : 'not-allowed'; b.disabled = !e.activo; b.title = e.titulo;
+}
+
+async function cd7ContarAdjuntosEnSegundoPlano(filas) {
+  const aContar = filas.filter(f => f.adjuntosReal == null);
+  aContar.slice(CD4_MAX_CONTEO_ADJUNTOS).forEach(f => { f.adjuntosReal = 'sin-contar'; cd7ActualizarAdjuntosEnPantalla(f); });
+  await ejecutarConPool(aContar.slice(0, CD4_MAX_CONTEO_ADJUNTOS), CD4_CONCURRENCIA_ADJUNTOS, async (f) => {
+    await cd7ContarAdjuntosFila(f);
+    cd7ActualizarAdjuntosEnPantalla(f);
+  }, () => {});
+}
+
+// ── 📝 Abrir documento y ✍️ Aprobar para firma ──
+// Según la captura (HAR) del flujo nativo, aprobar una tarea "Por aprobar"
+// con instrucción FIRMAR hace, en este orden: RadicarTarea (asigna el
+// radicado oficial) → ActProcesadoSi → RegistrarTareaDoc (crea la tarea
+// FIRMAR en la bandeja de firma) → InsertarDestinatarios → y el editor de
+// ControlDoc (Editor.aspx, sesión DevExpress) genera el PDF con el radicado.
+// Ese último paso solo lo puede hacer el editor; por eso el script NO
+// reimplementa esas peticiones: abre la pantalla nativa de la tarea y
+// "simula" los clics que haría una persona (Acción → Aprobar → Enviar →
+// Instrucción Firmar → Observación → Aceptar), de modo que es el propio
+// código de ControlDoc el que radica, genera el PDF y deja el documento en
+// la bandeja de firma. Solo queda en manos del usuario el RESUMEN final de
+// ControlDoc ("¿Desea continuar?"), porque ese clic radica oficialmente.
+const CD7_URL_LEIDO = 'https://controldoc.minsalud.gov.co/Controldoc//TareasDoc/ActualziarLeidoSI';
+const CD7_OBSERVACION_FIRMA_DEFAULT = 'VB';
+const CD7_ESPERA_EDITOR_MS = 90000;   // tiempo máximo para que cargue el editor de ControlDoc
+
+function cd7TipoDocCodigo(t) {
+  const n = Number(t);
+  return n === 1 ? 'X' : n === 2 ? 'P' : 'D';
+}
+
+// Visible "de verdad": sirve con las ventanas UIkit de ControlDoc (clase uk-open / display).
+function cd7Visible(sel) {
+  const el = document.querySelector(sel);
+  if (!el) return false;
+  if (el.classList.contains('uk-open')) return true;
+  return getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+}
+
+function cd7Dormir(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Espera a que `cond()` sea verdadera (revisando cada `paso` ms) o falla al agotar el tiempo.
+function cd7EsperarA(cond, ms, descripcion, paso = 300) {
+  return new Promise((resolver, rechazar) => {
+    const t0 = Date.now();
+    const revisar = () => {
+      let ok = false;
+      try { ok = !!cond(); } catch (e) { ok = false; }
+      if (ok) return resolver(true);
+      if (Date.now() - t0 > ms) return rechazar(new Error(`Tiempo de espera agotado: ${descripcion}`));
+      setTimeout(revisar, paso);
+    };
+    revisar();
+  });
+}
+
+// Aviso flotante (por encima de las ventanas de ControlDoc) para ir contando
+// en qué paso va la aprobación automática.
+function cd7Aviso(texto, tipo = 'info') {
+  let el = document.querySelector('#CD7_AvisoFirma');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'CD7_AvisoFirma';
+    el.style.cssText = 'position:fixed; right:20px; bottom:20px; z-index:100002; max-width:380px; padding:10px 12px; border-radius:8px; box-shadow:0 4px 14px rgba(0,0,0,0.3); font-family:sans-serif; font-size:12px; line-height:1.4;';
+    document.body.appendChild(el);
+  }
+  const colores = { info: ['#eff6ff', '#1e3a8a', '#93c5fd'], ok: ['#dcfce7', '#166534', '#22c55e'], aviso: ['#fef3c7', '#92400e', '#f59e0b'], error: ['#fee2e2', '#991b1b', '#ef4444'] }[tipo] || ['#eff6ff', '#1e3a8a', '#93c5fd'];
+  el.style.background = colores[0]; el.style.color = colores[1]; el.style.border = `1px solid ${colores[2]}`;
+  el.innerHTML = `<div style="display:flex; justify-content:space-between; gap:8px;"><div>${texto}</div><button id="CD7_AvisoFirmaCerrar" style="background:none; border:none; cursor:pointer; font-size:14px; color:inherit;">✕</button></div>`;
+  el.querySelector('#CD7_AvisoFirmaCerrar').onclick = () => el.remove();
+}
+
+// 📝 Abre la tarea en el editor nativo de ControlDoc (la misma pantalla que
+// al hacer clic en la fila de la bandeja) con la instrucción indicada.
+async function cd7AbrirDocumentoNativo(fila, instruccion) {
+  const jq = window.jQuery;
+  if (!jq || !document.querySelector('#page_content_inner')) {
+    alert('Para abrir el documento, ten ControlDoc abierto en el "Tablero de Control – Bandeja de Tareas Documentales" y vuelve a pulsar el botón.');
+    return false;
+  }
+
+  const v = await cd2Post(TD_CONFIG.urlValidar, { IDTAREADOC: fila.idTarea });
+  if (!v || !v.RESPUESTA) {
+    alert('ControlDoc indica que no se han radicado el/los traslado(s) de esta tarea, así que no permite abrirla todavía.');
+    return false;
+  }
+  try { await cdFetchPost(CD7_URL_LEIDO, { idtareadoc: fila.idTarea }); } catch (e) { /* no impide abrir */ }
+
+  const ruta = (window.GLOBALES && window.GLOBALES.URL) || 'https://controldoc.minsalud.gov.co/Controldoc//';
+  if (window.modal_spinner && typeof window.modal_spinner.show === 'function') window.modal_spinner.show();
+  jq('#page_content_inner').empty();
+  jq('#page_content_inner').load(ruta + 'TareasDoc/CrearDoc', {
+    TipoDocumento: cd7TipoDocCodigo(fila.tipoDoc), IdTareaInicial: fila.idInicial, IdTareaActual: fila.idTarea,
+    Editar: 'SI', INSTRUCCIONES: instruccion, IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
+  });
+  // Deja la pantalla libre para ver el documento (el panel queda como burbuja).
+  document.querySelector('#PCD_MinimizarTodo')?.click();
+  return true;
+}
+
+// ✍️ Aprobar para firma en UN clic y sin mostrar nada: todo ocurre en una
+// copia invisible de ControlDoc (iframe oculto de la misma sesión; ControlDoc
+// lo permite: X-Frame-Options SAMEORIGIN). Ahí se carga la tarea, se espera
+// al editor (es quien genera el PDF con el radicado), se deja el estado que
+// dejaría la ventana "Enviar documento" (Acción APROBAR · instrucción FIRMAR ·
+// firmante = usuario de la sesión · observación) y se llama directo a la
+// función de ControlDoc que dispara los endpoints del HAR: RadicarTarea →
+// ActProcesadoSi → RegistrarTareaDoc → InsertarDestinatarios → guardado del
+// PDF. Tu pantalla no cambia: solo ves el aviso de la esquina.
+// Si pulsas varias tarjetas, se procesan en fila, una detrás de otra.
+const CD7_URL_INICIO = 'https://controldoc.minsalud.gov.co/Controldoc/Home/Index';
+let CD7_COLA_FIRMA = Promise.resolve();
+
+// Estado en vivo de cada aprobación (se pinta en la tarjeta mientras ocurre).
+// fase: 'cola' | 'proceso' | 'aprobado' | 'error'
+const CD7_FASES = {};
+const CD7_ESTILO_FASE = {
+  cola:     { fondo: '#f3f4f6', color: '#374151', borde: '#d1d5db', tarjeta: '' },
+  proceso:  { fondo: '#ffedd5', color: '#9a3412', borde: '#f97316', tarjeta: 'background:#fff7ed; box-shadow:0 0 0 2px #f97316;' },
+  aprobado: { fondo: '#dcfce7', color: '#166534', borde: '#22c55e', tarjeta: 'background:#f0fdf4; box-shadow:0 0 0 2px #22c55e;' },
+  error:    { fondo: '#fee2e2', color: '#991b1b', borde: '#ef4444', tarjeta: 'background:#fef2f2; box-shadow:0 0 0 2px #ef4444;' },
+};
+
+function cd7HtmlFase(idTarea) {
+  const f = CD7_FASES[String(idTarea)];
+  if (!f) return '';
+  const e = CD7_ESTILO_FASE[f.fase] || CD7_ESTILO_FASE.cola;
+  return `<div style="margin-top:6px; padding:5px 8px; border-radius:6px; font-size:11px; font-weight:bold; background:${e.fondo}; color:${e.color}; border-left:3px solid ${e.borde};">${f.texto}</div>`;
+}
+
+function cd7MarcarFase(fila, fase, texto) {
+  CD7_FASES[String(fila.idTarea)] = { fase, texto };
+  const tarjeta = [...document.querySelectorAll('#PCD_SegLista > div[data-idtarea]')].find(el => el.dataset.idtarea === String(fila.idTarea));
+  if (!tarjeta) return;
+  const cont = tarjeta.querySelector('.cd7-fase');
+  if (cont) cont.innerHTML = cd7HtmlFase(fila.idTarea);
+  const e = CD7_ESTILO_FASE[fase];
+  if (e && e.tarjeta) tarjeta.style.cssText += ';' + e.tarjeta;
+}
+
+// ── 📬 Seguimiento de lo aprobado: pendiente de firma → firmado ──
+// Lo aprobado sale de "Por aprobar", así que se guarda aparte (en este
+// navegador) y se revisa su flujo cada cierto tiempo para saber cuándo quedó
+// firmado: un paso con instrucción FIRMAR y estado de firma FIRMADO.
+const CD7_LS_APROBADOS = 'CD7_APROBADOS_V1';
+const CD7_REVISION_FIRMAS_MS = 120000;   // cada 2 minutos mientras haya pendientes de firma
+let CD7_APROBADOS = cd7LsLeer(CD7_LS_APROBADOS, []);
+let CD7_TIMER_FIRMAS = null;
+let CD7_REVISANDO_FIRMAS = false;
+
+function cd7GuardarAprobados() {
+  if (CD7_APROBADOS.length > 300) CD7_APROBADOS = CD7_APROBADOS.slice(-300);
+  cd7LsEscribir(CD7_LS_APROBADOS, CD7_APROBADOS);
+  cd7RenderAprobados();
+  cd7ProgramarRevisionFirmas();
+}
+
+function cd7RegistrarAprobado(fila, radicado) {
+  const previo = CD7_APROBADOS.find(a => String(a.idTarea) === String(fila.idTarea));
+  const datos = { idTarea: fila.idTarea, idInicial: fila.idInicial, asunto: fila.asunto, radicado: radicado || '', aprobadoTs: Date.now(), fase: 'en-firma', firmadoTs: null, revisadoTs: null, firmante: '' };
+  if (previo) Object.assign(previo, datos); else CD7_APROBADOS.push(datos);
+  cd7GuardarAprobados();
+}
+
+function cd7EsFirmado(pasos) {
+  const firmado = (p) => { const e = String(p.estadoFirma || '').toUpperCase(); return e.includes('FIRMADO') && !e.includes('NO FIRMADO') && !e.includes('SIN FIRMA'); };
+  return pasos.find(p => (p.instruccion === 'FIRMAR' && firmado(p)) || p.estadoTarea === 'FIRMADO') || null;
+}
+
+async function cd7RevisarFirmas(manual = false) {
+  if (CD7_REVISANDO_FIRMAS) return;
+  const pendientes = CD7_APROBADOS.filter(a => a.fase === 'en-firma');
+  if (!pendientes.length) { if (manual) cd7RenderAprobados('No hay documentos pendientes de firma.'); return; }
+  CD7_REVISANDO_FIRMAS = true;
+  cd7RenderAprobados(`⏳ Revisando ${pendientes.length} documento(s)…`);
+  let nuevosFirmados = 0;
+  await ejecutarConPool(pendientes, 2, async (a) => {
+    try {
+      const pasos = await cd7ObtenerPasos({ idTarea: a.idTarea, idInicial: a.idInicial, instruccion: 'APROBAR' });
+      const paso = cd7EsFirmado(pasos);
+      const ultimo = pasos[pasos.length - 1];
+      a.revisadoTs = Date.now();
+      if (ultimo) a.firmante = ultimo.a || a.firmante;
+      if (paso) { a.fase = 'firmado'; a.firmadoTs = paso.fechaMs || Date.now(); a.firmante = paso.a || paso.de || a.firmante; nuevosFirmados++; }
+    } catch (e) { a.revisadoTs = Date.now(); }
+  }, () => {});
+  CD7_REVISANDO_FIRMAS = false;
+  cd7LsEscribir(CD7_LS_APROBADOS, CD7_APROBADOS);
+  cd7RenderAprobados(nuevosFirmados ? `✍️ ${nuevosFirmados} documento(s) recién firmado(s).` : '');
+  if (nuevosFirmados) cd7Aviso(`✍️ ${nuevosFirmados} documento(s) aprobado(s) ya quedaron <b>firmados</b>.`, 'ok');
+  cd7ProgramarRevisionFirmas();
+}
+
+function cd7ProgramarRevisionFirmas() {
+  clearTimeout(CD7_TIMER_FIRMAS);
+  if (CD7_APROBADOS.some(a => a.fase === 'en-firma')) CD7_TIMER_FIRMAS = setTimeout(() => cd7RevisarFirmas(), CD7_REVISION_FIRMAS_MS);
+}
+
+function cd7RenderAprobados(nota = '') {
+  const cont = document.querySelector('#PCD_SegAprobados');
+  if (!cont) return;
+  const lista = CD7_APROBADOS.slice().sort((a, b) => (a.fase === b.fase ? b.aprobadoTs - a.aprobadoTs : (a.fase === 'en-firma' ? -1 : 1)));
+  if (!lista.length) { cont.style.display = 'none'; return; }
+  cont.style.display = 'block';
+  const enFirma = lista.filter(a => a.fase === 'en-firma').length, firmados = lista.length - enFirma;
+  const fecha = (ms) => ms ? new Date(ms).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  cont.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+      <b style="font-size:11.5px;">📬 Aprobados para firma: 🟡 ${enFirma} pendiente(s) · 🟢 ${firmados} firmado(s)</b>
+      <div style="display:flex; gap:4px;">
+        <button id="PCD_SegRevisarFirmas" style="padding:3px 8px; font-size:10.5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🔄 Revisar firmas</button>
+        <button id="PCD_SegLimpiarFirmados" style="padding:3px 8px; font-size:10.5px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🧹 Quitar firmados</button>
+      </div>
+    </div>
+    ${nota ? `<div style="font-size:10.5px; color:#6b7280; margin-top:3px;">${nota}</div>` : ''}
+    <div style="max-height:200px; overflow-y:auto; margin-top:5px;">
+      ${lista.map(a => `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; padding:4px 6px; margin-top:3px; border-radius:5px; font-size:10.5px; background:${a.fase === 'firmado' ? '#dcfce7' : '#fefce8'};">
+          <div style="min-width:0;">
+            <b>Tarea ${cd7Esc(a.idInicial)}</b>${a.radicado ? ` · Rad. <span class="cd7-copiar-rad" data-rad="${cd7Esc(a.radicado)}" title="Clic para copiar" style="cursor:copy; text-decoration:underline dotted;">${cd7Esc(a.radicado)}</span>` : ''}
+            <div style="color:#6b7280; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${cd7Esc(a.asunto)}</div>
+          </div>
+          <span style="white-space:nowrap; font-weight:bold; color:${a.fase === 'firmado' ? '#166534' : '#92400e'};">${a.fase === 'firmado' ? `🟢 Firmado ${fecha(a.firmadoTs)}` : `🟡 Pendiente de firma`}</span>
+        </div>`).join('')}
+    </div>
+    <div style="font-size:9.5px; color:#9ca3af; margin-top:3px;">Se revisa solo cada ${CD7_REVISION_FIRMAS_MS / 60000} min mientras haya pendientes.</div>`;
+  cont.querySelector('#PCD_SegRevisarFirmas').onclick = () => cd7RevisarFirmas(true);
+  cont.querySelector('#PCD_SegLimpiarFirmados').onclick = () => { CD7_APROBADOS = CD7_APROBADOS.filter(a => a.fase !== 'firmado'); cd7GuardarAprobados(); };
+  cont.querySelectorAll('.cd7-copiar-rad').forEach(el => { el.onclick = () => { cdCopiarTexto(el.dataset.rad); const o = el.textContent; el.textContent = '✓ copiado'; setTimeout(() => { el.textContent = o; }, 1000); }; });
+}
+let CD7_FIRMA_PENDIENTES = 0;
+
+async function cd7CrearControlDocOculto() {
+  const marco = document.createElement('iframe');
+  marco.setAttribute('aria-hidden', 'true');
+  // Fuera de la pantalla pero con tamaño real, para que el editor se inicialice igual que visible.
+  marco.style.cssText = 'position:fixed; left:-12000px; top:0; width:1400px; height:900px; border:0; opacity:0; pointer-events:none;';
+  marco.src = CD7_URL_INICIO;
+  document.body.appendChild(marco);
+  await cd7EsperarA(() => marco.contentDocument && marco.contentDocument.readyState === 'complete' && marco.contentWindow.jQuery
+    && marco.contentDocument.querySelector('#page_content_inner'), 60000, 'ControlDoc en segundo plano');
+  await cd7Dormir(2500); // deja terminar lo que ControlDoc carga al iniciar, para que no pise la tarea
+  return marco;
+}
+
+function cd7ObservacionFirma() {
+  const v = (document.querySelector('#PCD_SegObsFirma')?.value || '').trim();
+  return v || CD7_OBSERVACION_FIRMA_DEFAULT;
+}
+
+function cd7AprobarParaFirma(fila) {
+  CD7_FIRMA_PENDIENTES++;
+  if (CD7_FIRMA_PENDIENTES > 1) cd7Aviso(`🕒 Tarea ${fila.idInicial} en fila (${CD7_FIRMA_PENDIENTES - 1} antes).`);
+  cd7MarcarFase(fila, 'cola', CD7_FIRMA_PENDIENTES > 1 ? `🕒 En fila para aprobar (${CD7_FIRMA_PENDIENTES - 1} antes)` : '🕒 Iniciando aprobación…');
+  const tarea = CD7_COLA_FIRMA.then(() => cd7AprobarParaFirmaAhora(fila)).finally(() => { CD7_FIRMA_PENDIENTES--; });
+  CD7_COLA_FIRMA = tarea.catch(() => {});
+  return tarea;
+}
+
+async function cd7AprobarParaFirmaAhora(fila) {
+  const obs = cd7ObservacionFirma();
+  let marco = null;
+  try {
+    cd7Aviso(`⏳ Tarea ${fila.idInicial}: preparando la aprobación en segundo plano…`);
+    cd7MarcarFase(fila, 'proceso', '⏳ 1/3 · Preparando la aprobación…');
+    const v = await cd2Post(TD_CONFIG.urlValidar, { IDTAREADOC: fila.idTarea });
+    if (!v || !v.RESPUESTA) throw new Error('ControlDoc indica que no se han radicado el/los traslado(s) de esta tarea');
+    try { await cdFetchPost(CD7_URL_LEIDO, { idtareadoc: fila.idTarea }); } catch (e) { /* no impide seguir */ }
+
+    cd7MarcarFase(fila, 'proceso', '⏳ 2/3 · Cargando el documento en segundo plano…');
+    marco = await cd7CrearControlDocOculto();
+    const W = marco.contentWindow, D = marco.contentDocument;
+    const ruta = (W.GLOBALES && W.GLOBALES.URL) || 'https://controldoc.minsalud.gov.co/Controldoc//';
+    W.jQuery('#page_content_inner').empty().load(ruta + 'TareasDoc/CrearDoc', {
+      TipoDocumento: cd7TipoDocCodigo(fila.tipoDoc), IdTareaInicial: fila.idInicial, IdTareaActual: fila.idTarea,
+      Editar: 'SI', INSTRUCCIONES: 'APROBAR', IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
+    });
+
+    CD7_MOVS.push({ ts: Date.now(), estado: 'PREPARADO', idTarea: fila.idTarea, idInicial: fila.idInicial, asunto: fila.asunto, listaOrigen: 'Por aprobar', accion: 'APROBAR → FIRMAR', destinatario: '', idDestinatario: '', comentario: obs, comentarioPreparado: obs, fechaPaso: '', login: CD7_SESION.login || '', detalle: 'Aprobación para firma enviada desde el panel' });
+    cd7GuardarMovs();
+
+    await cd7EsperarA(() => typeof W.TDOC_RADICAR === 'function' && typeof W.TDOC_GUARDARDOC === 'function'
+      && typeof W.DefinirDestinatarioMinSalud === 'function' && typeof W.TDOC_SeleccionarAccion === 'function', CD7_ESPERA_EDITOR_MS, 'pantalla de la tarea');
+    await cd7EsperarA(() => {
+      const f = D.querySelector('#ControlDocCeroPapelPDF');
+      return f && f.getAttribute('name') === 'ECP_EditorCeroPapel' && f.contentDocument && f.contentDocument.readyState === 'complete' && f.contentWindow.ASPx;
+    }, CD7_ESPERA_EDITOR_MS, 'editor del documento');
+    await cd7Dormir(3000); // margen para que el editor termine de inicializarse (en el HAR tardó ~7 s en total)
+
+    // Mismas validaciones que hace ControlDoc antes de enviar.
+    if (typeof W.ECP_EXL_VPDF_IDENTIFICAR === 'function' && W.ECP_EXL_VPDF_IDENTIFICAR() !== 'DOC') throw new Error('El editor no tiene seleccionada la última versión en formato DOC');
+    if ((W.VPDF_FirmaPdf || W.ECP_TipoPdf) && !W.VPDF_GuardoPdf) throw new Error('ControlDoc pide guardar primero el documento confirmando la inserción de la firma');
+
+    // Las ventanas de ControlDoc (avisos/confirmaciones) no se pueden ver en la copia
+    // oculta: se capturan para mostrarlas en el aviso si aparece alguna.
+    let mensajeControlDoc = '';
+    if (typeof W.CD_modal_alert === 'function') {
+      const original = W.CD_modal_alert;
+      W.CD_modal_alert = function (titulo, mensaje) { mensajeControlDoc = String(mensaje || titulo || '').replace(/<[^>]+>/g, ' '); return original.apply(this, arguments); };
+    }
+
+    // Estado que deja la ventana "Enviar documento" al aceptar (DestinatarioTarea.js + CrearDocReady.js).
+    W.TDOC_SeleccionarAccion('A');                 // TDOC_ACCION = 'APROBAR'
+    W.DefinirDestinatarioMinSalud();               // firmante = usuario de la sesión
+    const dest = W.ETDOC_DESTINATARIO && W.ETDOC_DESTINATARIO[0];
+    if (!dest || !dest.IDFUNCIONARIO) throw new Error('ControlDoc no devolvió el firmante de la sesión');
+    W.ETDOC_INSTRUCCIONES = 'FIRMAR'; W.ETDOC_INSTRUCCION = true; W.ETDOC_FIRMAR = true;
+    W.ETDOC_OBSERVACIONES = obs; W.ETDOC_ENVIAR = true; W.ETDOC_PROCEDENCIA = 'FUNCIONARIOS';
+    W.TDOC_FUNCIONARIOTAREA = dest;
+    W.TDOC_IDFUNCIONARIOTAREA = dest.IDFUNCIONARIO;
+    W.TDOC_NOMBREFUNCIONARIOTAREA = dest.NOMBRESAPELLIDOS;
+    W.TDOC_TABLAFUNCIONARIO = 'FUNCIONARIOS';
+    W.TDOC_INSTRUCCIONES = 'FIRMAR';
+    W.TDOC_OBSERVACIONES = obs;
+    W.TDOC_ENVIADO = true;
+
+    cd7Aviso(`⏳ Tarea ${fila.idInicial}: radicando y enviando a la bandeja de firma de ${cd7Esc(dest.NOMBRESAPELLIDOS)}…`);
+    cd7MarcarFase(fila, 'proceso', `⏳ 3/3 · Radicando y enviando a firma de ${cd7Esc(dest.NOMBRESAPELLIDOS)}…`);
+    W.TDOC_DCDOCUMENTORADICADO = null;
+    // Misma rama que ejecuta ControlDoc al confirmar el resumen (TDOC_CONFIRMARGUARDAR).
+    if (W.AppLlaves && W.AppLlaves.BANDEJAFLUJOFIRMAS === 'SI') W.TDOC_RADICAR(); else W.TDOC_GUARDARDOC();
+
+    let radicado = '';
+    try {
+      await cd7EsperarA(() => W.TDOC_DCDOCUMENTORADICADO && W.TDOC_DCDOCUMENTORADICADO.RADICADO, 60000, 'radicado');
+      radicado = W.TDOC_DCDOCUMENTORADICADO.RADICADO;
+    } catch (e) { /* algunas rutas de ControlDoc no publican el radicado en esa variable */ }
+    // Al terminar, ControlDoc cierra el editor y vuelve a la bandeja (dentro de la copia oculta).
+    let cerro = true;
+    try {
+      await cd7EsperarA(() => { const d = marco.contentDocument; return !d || !d.querySelector('#ControlDocCeroPapelPDF'); }, 90000, 'cierre del editor');
+    } catch (e) { cerro = false; }
+    await cd7Dormir(1500);
+
+    // Confirmación real: la tarea ya no debe estar en "Por aprobar".
+    let salio = null;
+    try {
+      const pendientes = await cd7ConsultarLista('aprobar', CD7_SESION.id || CD7_CUENTA.idFuncionario);
+      salio = !pendientes.some(f => String(f.idTarea) === String(fila.idTarea));
+    } catch (e) { salio = null; }
+
+    const ult = [...CD7_MOVS].reverse().find(m => m.estado === 'PREPARADO' && String(m.idInicial) === String(fila.idInicial));
+    if (ult && radicado) { ult.detalle = `Radicado ${radicado}`; cd7GuardarMovs(); }
+
+    if (salio === true) {
+      cd7Aviso(`✅ Tarea ${fila.idInicial}: aprobada${radicado ? ` · radicado <b>${cd7Esc(radicado)}</b>` : ''} y enviada a la bandeja de firma.`, 'ok');
+      cd7MarcarFase(fila, 'aprobado', `✅ Aprobado${radicado ? ` · radicado ${cd7Esc(radicado)}` : ''} · 🟡 pendiente de firma`);
+      cd7RegistrarAprobado(fila, radicado);
+      // La tarjeta queda en verde un momento y luego sale de la lista (pasa a "📬 Aprobados para firma").
+      setTimeout(() => { delete CD7_FASES[String(fila.idTarea)]; cd7CargarListas(); }, 2500);
+    } else {
+      cd7MarcarFase(fila, 'error', `⚠️ ${radicado ? `Radicado ${cd7Esc(radicado)}, pero ` : ''}${salio === false ? 'sigue en "Por aprobar"' : 'sin confirmar'} · revísala`);
+      cd7Aviso(`⚠️ Tarea ${fila.idInicial}: ${radicado ? `se radicó (<b>${cd7Esc(radicado)}</b>) pero ` : ''}${salio === false ? 'sigue en "Por aprobar"' : 'no se pudo confirmar si salió de "Por aprobar"'}${!cerro ? ' y ControlDoc no cerró el editor' : ''}.${mensajeControlDoc ? ` Mensaje de ControlDoc: ${cd7Esc(mensajeControlDoc.slice(0, 200))}` : ''} Revísala con 📝 Abrir documento.`, 'aviso');
+    }
+  } catch (e) {
+    cd7Aviso(`❌ Tarea ${fila.idInicial}: ${cd7Esc(e.message)}. No se envió nada.`, 'error');
+    cd7MarcarFase(fila, 'error', `❌ ${cd7Esc(e.message)} · no se envió nada`);
+  } finally {
+    if (marco) setTimeout(() => marco.remove(), 1000);
+  }
 }
 
 async function cd7CargarListas() {
@@ -3561,6 +4193,7 @@ async function cd7CargarListas() {
   });
   CD7_TRAZA = {};
   cd7Render();
+  cd7ContarAdjuntosEnSegundoPlano([...(CD7_DATOS.revisar || []), ...(CD7_DATOS.aprobar || [])]); // sin esperar: va actualizando cada tarjeta
   const esSesion = !!(CD7_SESION.id && CD7_CUENTA.idFuncionario === CD7_SESION.id);
   if (esSesion && !CD7_ERRORES.revisar && !CD7_ERRORES.aprobar) await cd7ProcesarSnapshot();
 }
@@ -3745,7 +4378,7 @@ function cd7RenderLista() {
     let vence = '';
     if (f.vence) { const d = Math.ceil((f.vence.getTime() - Date.now()) / 86400000); vence = `<span style="padding:1px 6px; border-radius:4px; font-size:10px; ${d < 0 ? 'background:#fecaca; color:#991b1b;' : 'background:#fde68a; color:#92400e;'}">Vence ${f.vence.toLocaleDateString('es-CO')} · ${d < 0 ? `vencida hace ${-d} d` : `faltan ${d} d`}</span>`; }
     return `
-    <div data-idtarea="${cd7Esc(f.idTarea)}" style="border:1px solid #e5e7eb; border-radius:8px; padding:9px; margin-bottom:8px; ${String(f.idTarea) === CD7_SELECCIONADA ? 'background:#fef9c3; box-shadow:0 0 0 2px #eab308;' : 'background:#fff;'} ${f.leido ? '' : 'border-left:4px solid #2563eb;'}">
+    <div data-idtarea="${cd7Esc(f.idTarea)}" style="border:1px solid #e5e7eb; border-radius:8px; padding:9px; margin-bottom:8px; ${String(f.idTarea) === CD7_SELECCIONADA ? 'background:#fef9c3; box-shadow:0 0 0 2px #eab308;' : 'background:#fff;'} ${f.leido ? '' : 'border-left:4px solid #2563eb;'} ${(CD7_ESTILO_FASE[(CD7_FASES[String(f.idTarea)] || {}).fase] || {}).tarjeta || ''}">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
         <span style="font-weight:${f.leido ? 'normal' : 'bold'}; font-size:12px;"><span class="cd7-id-copiar" data-id="${cd7Esc(f.idInicial)}" title="Clic para copiar el ID TAREA (el mismo que muestra ControlDoc)" style="cursor:copy; text-decoration:underline dotted;">Tarea ${cd7Esc(f.idInicial)}</span><span class="cd7-marca" style="${String(f.idTarea) === CD7_SELECCIONADA ? '' : 'display:none;'} background:#eab308; color:#fff; font-size:10px; font-weight:bold; padding:1px 7px; border-radius:8px; margin-left:6px;">👉 Seleccionada</span> <span style="color:#9ca3af; font-weight:normal; font-size:10px;">· paso ${cd7Esc(f.idTarea)}${Number(f.idc) > 0 ? ' · IDC ' + cd7Esc(f.idc) : ''}</span></span>
         <span style="padding:1px 8px; border-radius:10px; background:${cI.fondo}; color:${cI.color}; font-weight:bold; font-size:10px;">${cd7Esc(f.instruccion || f.estadoTarea || '—')}</span>
@@ -3756,9 +4389,10 @@ function cd7RenderLista() {
         <span>📅 ${cd7Esc(f.creacion) || '—'}</span>
         <span style="padding:1px 6px; border-radius:4px; background:${sem.fondo}; color:${sem.color}; font-weight:bold;" title="Días desde que llegó a tu bandeja">⏱ ${dias == null ? '—' : dias + ' d en bandeja'}</span>
         ${vence}
-        <span>📎 ${f.adjuntos}</span><span>💬 ${f.numObs}</span>${f.leido ? '' : '<span style="color:#2563eb; font-weight:bold;">● sin leer</span>'}
+        <span class="cd7-adj-n" title="Adjuntos reales de la tarea">📎 ${cd7TextoAdjuntos(f)}</span><span>💬 ${f.numObs}</span>${f.leido ? '' : '<span style="color:#2563eb; font-weight:bold;">● sin leer</span>'}
       </div>
       ${f.obs ? `<div style="background:#eff6ff; border-left:3px solid #2563eb; padding:4px 7px; border-radius:4px; margin-top:5px; font-size:10.5px; color:#1e3a8a;" title="${cd7Esc(f.obs)}">${cd7Esc(f.obs.length > 180 ? f.obs.slice(0, 180) + '…' : f.obs)}</div>` : ''}
+      <div class="cd7-fase">${cd7HtmlFase(f.idTarea)}</div>
       ${res ? `<div style="margin-top:5px; font-size:10.5px; color:#374151;">📜 <b>${res.pasos}</b> pasos · en poder de <b>${cd7Esc(res.enPoderDe) || '—'}</b> hace <b>${cd7Duracion(res.tiempoEnPaso)}</b> · total ${cd7Duracion(res.tiempoTotal)}</div>` : ''}
       <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
         <button class="cd7-btn-copiar" data-id="${cd7Esc(f.idTarea)}" data-campo="idInicial" title="Copiar el ID TAREA (el mismo que muestra ControlDoc)" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDT</button>
@@ -3770,7 +4404,9 @@ function cd7RenderLista() {
         <button class="cd7-btn-traza" data-id="${cd7Esc(f.idTarea)}" style="padding:6px 11px; background:#ea580c; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📜 ${f.trazaAbierta ? 'Ocultar' : 'Trazabilidad'}</button>
         <button class="cd7-btn-pdf" data-id="${cd7Esc(f.idTarea)}" ${f.nombreArchivo ? '' : 'disabled'} style="padding:6px 11px; background:#e5e7eb; border:none; border-radius:5px; cursor:${f.nombreArchivo ? 'pointer' : 'not-allowed'}; font-size:12px; font-weight:600;${f.nombreArchivo ? '' : ' opacity:0.5;'}">👁 Ver PDF</button>
         <button class="cd7-btn-bajar-pdf" data-id="${cd7Esc(f.idTarea)}" ${f.nombreArchivo ? '' : 'disabled'} style="padding:6px 11px; background:#e5e7eb; border:none; border-radius:5px; cursor:${f.nombreArchivo ? 'pointer' : 'not-allowed'}; font-size:12px; font-weight:600;${f.nombreArchivo ? '' : ' opacity:0.5;'}">⬇ PDF</button>
-        <button class="cd7-btn-adjuntos" data-id="${cd7Esc(f.idTarea)}" style="padding:6px 11px; background:#e5e7eb; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📎 Adjuntos</button>
+        ${(() => { const e = cd4EstadoBotonAdjuntos(f); return `<button class="cd7-btn-adjuntos" data-id="${cd7Esc(f.idTarea)}" title="${cd7Esc(e.titulo)}" ${e.activo ? '' : 'disabled'} style="padding:6px 11px; background:${e.fondo}; color:${e.color}; border:none; border-radius:5px; cursor:${e.activo ? 'pointer' : 'not-allowed'}; font-size:12px; font-weight:600;">📎 ${e.texto}</button>`; })()}
+        ${puedePreparar ? `<button class="cd7-btn-abrir-doc" data-id="${cd7Esc(f.idTarea)}" title="Abre esta tarea en el editor de ControlDoc (la misma pantalla de la bandeja)" style="padding:6px 11px; background:#0f766e; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📝 Abrir documento</button>` : ''}
+        ${puedePreparar && (CD7_LISTA_ACTIVA === 'aprobar' || f.instruccion === 'APROBAR') ? `<button class="cd7-btn-aprobar-firma" data-id="${cd7Esc(f.idTarea)}" title="Un clic: aprueba y envía a la bandeja de firma en segundo plano (radica directo, sin abrir nada)" style="padding:6px 11px; background:#16a34a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">✍️ Aprobar para firma</button>` : ''}
         ${puedePreparar ? `<button class="cd7-btn-preparar" data-id="${cd7Esc(f.idTarea)}" style="padding:6px 11px; background:#7c3aed; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📤 Preparar envío</button>` : ''}
       </div>
       ${f.trazaAbierta ? `<div style="margin-top:8px; padding:8px; background:#fafafa; border-radius:6px;">${cd7HtmlTraza(tz, f) || '<div style="color:#9ca3af; font-size:11px;">Pulsa de nuevo para cargar.</div>'}</div>` : ''}
@@ -3804,6 +4440,8 @@ function cd7RenderLista() {
   cont.querySelectorAll('.cd7-id-copiar').forEach(s => { s.onclick = () => { cdCopiarTexto(String(s.dataset.id)); retro(s, '✓ copiado'); }; });
   cont.querySelectorAll('.cd7-btn-bajar-pdf').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f && f.nombreArchivo) cd7Ocupado(b, '⏳ Descargando…', () => cd7BajarPdf(f.nombreArchivo, `Tarea_${f.idInicial}${f.orden ? '_paso' + f.orden : ''}.pdf`)); }; });
   cont.querySelectorAll('.cd7-btn-adjuntos').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7Ocupado(b, '⏳ Consultando…', () => cd7MostrarAdjuntos(f)); }; });
+  cont.querySelectorAll('.cd7-btn-abrir-doc').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7Ocupado(b, '⏳ Abriendo…', () => cd7AbrirDocumentoNativo(f, f.instruccion === 'APROBAR' || CD7_LISTA_ACTIVA === 'aprobar' ? 'APROBAR' : 'REVISAR')); }; });
+  cont.querySelectorAll('.cd7-btn-aprobar-firma').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7Ocupado(b, '⏳ Aprobando…', () => cd7AprobarParaFirma(f)); }; });
   cont.querySelectorAll('.cd7-btn-preparar').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7AbrirPreparacion(f); }; });
   cont.querySelectorAll('.cd7-paso-pdf').forEach(b => { b.onclick = () => cd7Ocupado(b, '⏳', () => b.dataset.modo === 'ver' ? cd7AbrirPdf(b.dataset.archivo) : cd7BajarPdf(b.dataset.archivo, b.dataset.nombre)); });
 
@@ -3834,7 +4472,7 @@ function cd7Excel() {
   const cuerpo = filas.map(f => {
     const dias = f.creacionMs ? Math.floor((Date.now() - f.creacionMs) / 86400000) : '';
     const r = cd7ResumenTraza(CD7_TRAZA[f.idTarea]);
-    return `<tr><td>${lista}</td><td>${esc(f.idInicial)}</td><td>${esc(f.idTarea)}</td><td>${Number(f.idc) > 0 ? esc(f.idc) : ''}</td><td>${esc(f.radicado)}</td><td>${esc(f.asunto)}</td><td>${esc(f.de)}</td><td>${esc(f.instruccion)}</td><td>${esc(f.creacion)}</td><td>${dias}</td><td>${f.vence ? esc(f.vence.toLocaleDateString('es-CO')) : ''}</td><td>${f.adjuntos}</td><td>${f.numObs}</td><td>${f.leido ? 'SÍ' : 'NO'}</td><td>${r ? r.pasos : ''}</td><td>${r ? esc(r.enPoderDe) : ''}</td><td>${r ? esc(cd7Duracion(r.tiempoEnPaso)) : ''}</td></tr>`;
+    return `<tr><td>${lista}</td><td>${esc(f.idInicial)}</td><td>${esc(f.idTarea)}</td><td>${Number(f.idc) > 0 ? esc(f.idc) : ''}</td><td>${esc(f.radicado)}</td><td>${esc(f.asunto)}</td><td>${esc(f.de)}</td><td>${esc(f.instruccion)}</td><td>${esc(f.creacion)}</td><td>${dias}</td><td>${f.vence ? esc(f.vence.toLocaleDateString('es-CO')) : ''}</td><td>${typeof f.adjuntosReal === 'number' ? f.adjuntosReal : ''}</td><td>${f.numObs}</td><td>${f.leido ? 'SÍ' : 'NO'}</td><td>${r ? r.pasos : ''}</td><td>${r ? esc(r.enPoderDe) : ''}</td><td>${r ? esc(cd7Duracion(r.tiempoEnPaso)) : ''}</td></tr>`;
   }).join('');
   const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>Lista</th><th>ID Tarea (el de ControlDoc)</th><th>ID del paso (IDTAREADOC)</th><th>IDC</th><th>Radicado</th><th>Asunto</th><th>De</th><th>Instrucción</th><th>Creación</th><th>Días en bandeja</th><th>Vence</th><th>Adjuntos</th><th>Observaciones (n)</th><th>Leído</th><th>Pasos (si cargó trazabilidad)</th><th>En poder de</th><th>Tiempo en el paso actual</th></tr>${cuerpo}</table></body></html>`;
   cd4DescargarBlob(new Blob([html], { type: 'application/vnd.ms-excel' }), `Seguimiento_${lista.replace(' ', '_')}_${new Date().toISOString().slice(0, 10)}.xls`);
@@ -3897,10 +4535,9 @@ async function cd7BajarPdf(nombreArchivo, nombreSalida) {
 
 // Los adjuntos de una cadena cuelgan de su tarea inicial (así los pide el editor nativo).
 async function cd7MostrarAdjuntos(fila) {
-  const ids = [...new Set([fila.idInicial, fila.idTarea].filter(Boolean).map(String))];
-  let elegido = ids[0];
-  for (const id of ids) { try { if ((await cd4ObtenerAdjuntos(id)).length) { elegido = id; break; } } catch (e) { /* prueba el siguiente */ } }
-  await cd4MostrarAdjuntos(elegido);
+  if (!fila.adjuntosId) await cd7ContarAdjuntosFila(fila); // vuelve a contar (también recupera un conteo fallido)
+  cd7ActualizarAdjuntosEnPantalla(fila);
+  await cd4MostrarAdjuntos(fila.adjuntosId || String(fila.idInicial || fila.idTarea));
 }
 
 // Copia los ID de tarea de los primeros N de la vista actual (respeta filtro y orden).
@@ -3963,26 +4600,26 @@ function cd7RegistrarSalida(s, siguiente, error) {
 async function cd7DetectarMovimientos(salidas) {
   const progreso = cd7Q('#PCD_SegProgreso');
   progreso.textContent = `⏳ Detectando ${salidas.length} movimiento(s)…`;
+  let registrados = 0;
   await ejecutarConPool(salidas, CD7_CONCURRENCIA_TRAZA, async (s) => {
     let pasos = null, error = '';
     try { pasos = await cd7ObtenerPasos({ idTarea: s.idTarea, idInicial: s.idInicial, instruccion: s.instruccion }); } catch (e) { error = e.message; }
     const orden = Number(s.orden) || 0;
     const posteriores = pasos ? pasos.filter(p => orden > 0 ? p.orden > orden : String(p.idTarea) !== String(s.idTarea)).sort((a, b) => b.orden - a.orden) : [];
+    if (!error && !posteriores.length) return;   // sin paso nuevo: no es un movimiento real (lectura incompleta)
     cd7RegistrarSalida(s, posteriores[0] || null, error);
+    registrados++;
   }, () => {});
   cd7GuardarMovs();
-  progreso.textContent = `✅ ${salidas.length} movimiento(s) detectado(s) y guardado(s) en el registro.`;
+  progreso.textContent = registrados ? `✅ ${registrados} movimiento(s) detectado(s) y guardado(s) en el registro.` : '';
 }
 
 async function cd7ProcesarSnapshot() {
   const progreso = cd7Q('#PCD_SegProgreso');
   const actuales = [...CD7_DATOS.revisar.map(f => cd7MinFila(f, 'Por revisar')), ...CD7_DATOS.aprobar.map(f => cd7MinFila(f, 'Por aprobar'))];
-  const c = CD7_CONTADORES;
-  // Si el tablero y las listas no coinciden, esta lectura es dudosa: no se detecta nada ni se pisa la foto anterior.
-  if (c && ((c.revisar != null && c.revisar !== CD7_DATOS.revisar.length) || (c.aprobar != null && c.aprobar !== CD7_DATOS.aprobar.length))) {
-    progreso.textContent = '⚠️ El tablero y las listas no coinciden en esta lectura: no se detectaron movimientos (se reintentará al actualizar).';
-    return;
-  }
+  // El contador del tablero puede incluir tareas que la lista no trae (p. ej. pretareas), así
+  // que ya no se bloquea por esa diferencia: cada salida se confirma leyendo su flujo y solo
+  // se registra si de verdad hay un paso nuevo.
   const previo = cd7LsLeer(CD7_LS_SNAPSHOT, null);
   if (previo && previo.cuenta === CD7_CUENTA.idFuncionario) {
     const ahora = new Set(actuales.map(f => String(f.idTarea)));
@@ -4121,7 +4758,9 @@ async function cd7Buscar() {
 }
 
 function cd7Cablear() {
-  cd7Q('#PCD_SegActualizar').onclick = () => cd7CargarTodo();
+  cd7RenderAprobados();
+  if (CD7_APROBADOS.some(a => a.fase === 'en-firma')) setTimeout(() => cd7RevisarFirmas(), 5000);
+  cd7Q('#PCD_SegActualizar').onclick = () => { cd7CargarTodo(); cd7RevisarFirmas(); };
   document.querySelectorAll('.cd7-lista-btn').forEach(b => { b.onclick = () => { CD7_LISTA_ACTIVA = b.dataset.lista; cd7Render(); }; });
   cd7Q('#PCD_SegFiltro').addEventListener('input', cd7RenderLista);
   cd7Q('#PCD_SegOrden').addEventListener('change', cd7RenderLista);
@@ -4152,6 +4791,7 @@ const CD3_TABS = [
   { clave: 'comentarios',  emoji: '💬', etiqueta: 'Coment.',   titulo: 'Comentarios de gestión',                      color: '#0d9488', cuerpoId: '#PCD_CuerpoComentarios' },
   { clave: 'palabras',     emoji: '⚙️', etiqueta: 'Palabras',  titulo: 'Configuración de Palabras Clave',             color: '#6b7280', cuerpoId: '#PCD_CuerpoSec1' },
   { clave: 'descargas',    emoji: '⬇️', etiqueta: 'Descargas', titulo: 'Descarga masiva (PDF, adjuntos, o ambos)',    color: '#be123c', cuerpoId: '#PCD_CuerpoSec8' },
+  { clave: 'ia',           emoji: '🤖', etiqueta: 'IA',        titulo: 'Reasignación masiva desde tabla generada por IA', color: '#4f46e5', cuerpoId: '#PCD_CuerpoSec10' },
 ];
 let CD3_TAB_ACTIVA = 'cargar';
 
@@ -4213,10 +4853,33 @@ function cd3CrearPanel() {
     <div id="PCD_CuerpoGeneral" style="flex:1; min-height:0; overflow-y:auto; padding-right:4px;">
 
       <div id="PCD_CuerpoSec2" style="display:none;">
-        <label style="color:#6b7280; font-size:11px; font-weight:bold;">⚡ Documentos simultáneos al reasignar/cerrar en lote</label>
-        <div style="display:flex; align-items:center; gap:8px; margin:4px 0 10px;">
-          <input id="PCD_Concurrencia" type="number" min="1" max="50" value="${CONCURRENCIA_MAXIMA}" style="width:70px; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:12px; text-align:center;">
-          <span style="color:#6b7280; font-size:10px;">Cuántas peticiones al servidor van a la vez (ej: 10 más lento y prudente, 30 más rápido). Aplica a "Reasignar clasificados", Reasignación Manual y el buscador ad-hoc.</span>
+        <div style="border:1px solid #e5e7eb; border-radius:8px; padding:8px; margin-bottom:10px; background:#f9fafb;">
+          <label style="color:#374151; font-size:11px; font-weight:bold;">⚡ Envío masivo (reasignar / cerrar en lote)</label>
+          <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:6px;">
+            <label style="font-size:11px; color:#6b7280;">Modo
+              <select id="PCD_ModoMasivo" style="padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+                <option value="paquetes">📦 Por paquetes (salen juntos y se espera a todos)</option>
+                <option value="continuo">🔁 Continuo (cada puesto toma el siguiente al terminar)</option>
+              </select>
+            </label>
+            <label style="font-size:11px; color:#6b7280;">Documentos a la vez
+              <input id="PCD_Concurrencia" type="number" min="1" max="${CONCURRENCIA_TOPE}" value="${CONCURRENCIA_MAXIMA}" style="width:65px; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:12px; text-align:center;">
+            </label>
+            <label id="PCD_PausaWrap" style="font-size:11px; color:#6b7280;">Pausa entre paquetes (seg)
+              <input id="PCD_PausaPaquetes" type="number" min="0" max="60" step="0.5" value="${PAUSA_ENTRE_PAQUETES_MS / 1000}" style="width:55px; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:12px; text-align:center;">
+            </label>
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
+            ${[1, 5, 10, 25, 50, 100, 200, 400].map(n => `<button class="pcd-preset-conc" data-n="${n}" style="padding:3px 8px; font-size:10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">${n}</button>`).join('')}
+          </div>
+          <div id="PCD_ConcAyuda" style="color:#6b7280; font-size:10px; margin-top:5px;"></div>
+          <label style="display:flex; align-items:center; gap:6px; margin-top:8px; font-size:11px; color:#111827; font-weight:bold; cursor:pointer;">
+            <input id="PCD_ModoRapido" type="checkbox" ${MODO_RAPIDO ? 'checked' : ''}> 🚀 Modo rápido (≈1 petición por documento en vez de ≈5)
+          </label>
+          <div style="display:flex; align-items:center; gap:6px; margin-top:6px; flex-wrap:wrap;">
+            <button id="PCD_MedirSimultaneidad" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">🧪 Medir simultaneidad real del servidor</button>
+            <span id="PCD_MedirResultado" style="font-size:10px; color:#6b7280;"></span>
+          </div>
         </div>
         <label style="color:#6b7280; font-size:11px; font-weight:bold;">👁️ Bandeja a cargar (por defecto, la tuya)</label>
         <div style="display:flex; gap:6px; margin:4px 0;">
@@ -4299,12 +4962,19 @@ function cd3CrearPanel() {
       </div>
 
       <div id="PCD_CuerpoSec5" style="display:none;">
-        <label style="color:#6b7280; font-size:11px; font-weight:bold;">Buscar dependencia, dirección, subdirección u oficina por nombre</label>
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">🏢 Buscar dependencia, dirección, subdirección u oficina por nombre (se le asigna a su jefe)</label>
         <div style="display:flex; gap:6px; margin:4px 0 8px;">
           <input id="PCD_BuscarOficinaTexto" type="text" placeholder="ej: SALUD MENTAL, FINANCIAMIENTO..." style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
           <button id="PCD_BuscarOficinaBtn" style="padding:5px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
         </div>
         <div id="PCD_ResultadosOficina" style="max-height:180px; overflow-y:auto; margin-bottom:10px;"></div>
+
+        <label style="color:#6b7280; font-size:11px; font-weight:bold;">👤 O buscar un funcionario específico (se le asigna directamente a él/ella)</label>
+        <div style="display:flex; gap:6px; margin:4px 0 8px;">
+          <input id="PCD_BuscarFuncDestinoTexto" type="text" placeholder="ej: RICARDO LUQUE" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <button id="PCD_BuscarFuncDestinoBtn" style="padding:5px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Buscar</button>
+        </div>
+        <div id="PCD_ResultadosFuncDestino" style="max-height:180px; overflow-y:auto; margin-bottom:10px;"></div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
           <label style="color:#6b7280; font-size:11px; font-weight:bold;">Destino(s) elegidos (📥 Usar para reasignar) — puedes elegir varios</label>
@@ -4402,8 +5072,13 @@ function cd3CrearPanel() {
           <button id="PCD_SegCopiarNBtn" style="padding:3px 9px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">📋 Copiar</button>
         </div>
         <div id="PCD_SegCopiarEstado" style="font-size:11px; margin-bottom:4px; min-height:13px;"></div>
+        <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px; font-size:11px; color:#6b7280;">
+          <label for="PCD_SegObsFirma">✍️ Observación al aprobar para firma:</label>
+          <input id="PCD_SegObsFirma" type="text" value="VB" style="flex:1; max-width:260px; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+        </div>
         <div id="PCD_SegEstado" style="font-size:11px; color:#6b7280; margin-bottom:2px;">Abre esta pestaña para cargar tus tareas.</div>
         <div id="PCD_SegProgreso" style="font-size:11px; color:#ea580c; font-weight:bold; margin-bottom:6px; min-height:14px;"></div>
+        <div id="PCD_SegAprobados" style="display:none; padding:7px 8px; margin-bottom:8px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px;"></div>
         <div id="PCD_SegLista"></div>
       </div>
 
@@ -4502,6 +5177,7 @@ function cd3CrearPanel() {
   document.querySelector('#PCD_DescargasCargarResultados').onclick = cd5CargarDesdeResultados;
   document.querySelectorAll('.cd5-btn-descarga').forEach(btn => { btn.onclick = () => cd5DescargarMasivo(btn.dataset.modo); });
   cd7Cablear();
+  cd8InyectarPestana(); // contenido de la pestaña 🤖 IA (sección más abajo)
   document.querySelectorAll('.cd6-subtab-btn').forEach(btn => { btn.onclick = () => cd6CambiarSubtab(btn.dataset.sub); });
   document.querySelector('#PCD_TdmEjecutar').onclick = () => cd6Ejecutar(false);
   document.querySelector('#PCD_TdmReintentar').onclick = () => cd6Ejecutar(true);
@@ -4520,11 +5196,51 @@ function cd3CrearPanel() {
 
   document.querySelector('#PCD_BandejaBuscar').onclick = cd3BuscarFuncionariosBandejaUI;
   document.querySelector('#PCD_BandejaBuscarGlobal').onclick = cd3BuscarFuncionariosGlobalUI;
-  document.querySelector('#PCD_Concurrencia').addEventListener('change', (e) => {
-    const n = Math.min(50, Math.max(1, Number(e.target.value) || 1));
+  const pintarAyudaConc = () => {
+    const ayuda = document.querySelector('#PCD_ConcAyuda');
+    document.querySelector('#PCD_PausaWrap').style.display = MODO_MASIVO === 'paquetes' ? '' : 'none';
+    document.querySelectorAll('.pcd-preset-conc').forEach(b => {
+      const activo = Number(b.dataset.n) === CONCURRENCIA_MAXIMA;
+      b.style.background = activo ? '#111827' : '#e5e7eb'; b.style.color = activo ? '#fff' : '#111827';
+    });
+    const base = MODO_MASIVO === 'paquetes'
+      ? `Como ${CONCURRENCIA_MAXIMA} computador(es) a la vez: salen ${CONCURRENCIA_MAXIMA} documento(s) al mismo tiempo, se espera a que TODOS terminen y, tras ${PAUSA_ENTRE_PAQUETES_MS / 1000} s, salen los siguientes ${CONCURRENCIA_MAXIMA}.`
+      : `Como ${CONCURRENCIA_MAXIMA} computador(es) a la vez: arrancan ${CONCURRENCIA_MAXIMA} documentos al mismo tiempo y cada computador toma el siguiente IDC apenas termina el suyo, sin esperar a los demás.`;
+    const aviso = CONCURRENCIA_MAXIMA > 25 ? ' ⚠️ Con valores altos ControlDoc puede responder error 500; el script reintenta, pero si ves muchos fallos, baja el número.' : '';
+    ayuda.textContent = base + aviso;
+    ayuda.style.color = CONCURRENCIA_MAXIMA > 25 ? '#b45309' : '#6b7280';
+  };
+  const fijarConcurrencia = (valor) => {
+    const n = Math.min(CONCURRENCIA_TOPE, Math.max(1, Math.round(Number(valor)) || 1));
     CONCURRENCIA_MAXIMA = n;
-    e.target.value = n;
+    document.querySelector('#PCD_Concurrencia').value = n;
+    pintarAyudaConc();
+  };
+  document.querySelector('#PCD_Concurrencia').addEventListener('change', (e) => fijarConcurrencia(e.target.value));
+  document.querySelectorAll('.pcd-preset-conc').forEach(b => { b.onclick = () => fijarConcurrencia(b.dataset.n); });
+  document.querySelector('#PCD_ModoMasivo').value = MODO_MASIVO;
+  document.querySelector('#PCD_ModoMasivo').onchange = (e) => { MODO_MASIVO = e.target.value; pintarAyudaConc(); };
+  document.querySelector('#PCD_PausaPaquetes').addEventListener('change', (e) => {
+    const seg = Math.min(60, Math.max(0, Number(e.target.value) || 0));
+    PAUSA_ENTRE_PAQUETES_MS = Math.round(seg * 1000);
+    e.target.value = seg;
+    pintarAyudaConc();
   });
+  pintarAyudaConc();
+  document.querySelector('#PCD_ModoRapido').onchange = (e) => { MODO_RAPIDO = e.target.checked; cd2InvalidarCacheBandeja(); };
+  document.querySelector('#PCD_MedirSimultaneidad').onclick = async (e) => {
+    const btn = e.currentTarget, out = document.querySelector('#PCD_MedirResultado');
+    const n = Math.max(5, Math.min(CONCURRENCIA_MAXIMA, 10));
+    btn.disabled = true; out.style.color = '#6b7280'; out.textContent = `⏳ Midiendo con ${n} consultas de solo lectura…`;
+    try {
+      const r = await cd2MedirSimultaneidad(n);
+      out.style.color = r.paralelo ? '#16a34a' : '#b45309';
+      out.textContent = r.paralelo
+        ? `✅ El servidor sí atiende en paralelo: 1 consulta ${r.tUna} ms, ${r.n} juntas ${r.tGrupo} ms.`
+        : `⚠️ El servidor atiende tu sesión de a una: 1 consulta ${r.tUna} ms, ${r.n} juntas ${r.tGrupo} ms (≈${r.factor.toFixed(1)}×). Subir "a la vez" no acelerará mucho; el modo rápido sí.`;
+    } catch (err) { out.style.color = '#dc2626'; out.textContent = '❌ No se pudo medir: ' + err.message; }
+    finally { btn.disabled = false; }
+  };
   document.querySelector('#PCD_BandejaBuscarTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarFuncionariosGlobalUI(); });
   document.querySelector('#PCD_BandejaFiltro').addEventListener('input', cd3PintarListaFuncionariosBandeja);
   document.querySelector('#PCD_BandejaFuncionario').onchange = (e) => cd3ElegirBandeja(Number(e.target.value));
@@ -4558,6 +5274,8 @@ function cd3CrearPanel() {
 
   document.querySelector('#PCD_BuscarOficinaBtn').onclick = cd3BuscarOficinaUI;
   document.querySelector('#PCD_BuscarOficinaTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarOficinaUI(); });
+  document.querySelector('#PCD_BuscarFuncDestinoBtn').onclick = cd3BuscarFuncionarioDestinoUI;
+  document.querySelector('#PCD_BuscarFuncDestinoTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd3BuscarFuncionarioDestinoUI(); });
   document.querySelector('#PCD_ReasignarAdHoc').onclick = cd3ReasignarAdHoc;
   document.querySelector('#PCD_DestinosAdHocLimpiar').onclick = () => { CD3_DESTINOS_ADHOC = []; cd3PintarDestinosAdHoc(); };
   cd3PintarDestinosAdHoc();
@@ -4608,6 +5326,704 @@ function cd3HabilitarArrastre(contenedor, agarre) {
     contenedor.style.left = (e.clientX - offsetX) + 'px'; contenedor.style.top = y + 'px';
   });
   document.addEventListener('mouseup', () => { arrastrando = false; });
+}
+
+// ════════════════════════════════════════════════════════════════
+// ═══ PESTAÑA 🤖 IA: REASIGNACIÓN MASIVA DESDE TABLA GENERADA POR IA ═══
+// Pegar la tabla generada por IA (IDC | dependencia | comentario |
+// justificación) → se busca cada dependencia en el catálogo de oficinas de
+// ControlDoc (sin tildes, sin mayúsculas y sin palabras vacías), se obtiene
+// su jefe y se verifica que el IDC siga en tu bandeja → previsualización →
+// reasignar fila por fila o todas las seleccionadas.
+//
+// Cada IDC puede ir a UNA o VARIAS dependencias (un solo trámite con varios
+// destinatarios, igual que "Agregar Todos" en ControlDoc). Si la columna de
+// dependencia trae varias separadas por "+" o ";", se cargan todas.
+// ════════════════════════════════════════════════════════════════
+const CD8_CONCURRENCIA_VALIDACION = 5; // validaciones simultáneas al cargar la tabla
+const CD8_UMBRAL_AUTO = 0.85; // puntaje mínimo para aceptar el destino sin confirmación
+const CD8_MARGEN_AUTO = 0.1; // ventaja mínima del primer candidato sobre el segundo
+const CD8_PUNTAJE_MINIMO = 0.4; // por debajo de esto un candidato no se ofrece
+const CD8_ESPERA_LIMPIEZA_MS = 2000; // los IDC reasignados con éxito salen de la lista tras 2 segundos
+const CD8_PALABRAS_VACIAS = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL', 'Y', 'E', 'EN', 'A', 'PARA', 'POR', 'CON', 'AL']);
+const CD8_PALABRAS_TIPO = new Set(['DIRECCION', 'SUBDIRECCION', 'OFICINA', 'GRUPO', 'DESPACHO', 'VICEMINISTERIO', 'VICEMINISTRO', 'SECRETARIA', 'UNIDAD', 'COORDINACION', 'ASESORA']);
+let CD8_FILAS = [];
+let CD8_CATALOGO = null; // [{ idOficina, idUnidad, nombre, tipo:[], nucleo:[] }]
+let CD8_EN_CURSO = false;
+let CD8_SELECCIONADA = null; // idc de la tarjeta que estás revisando; se resalta en amarillo
+// ── Utilidades ──
+function cd8Esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+// Normaliza igual que ControlDoc registra sus dependencias: sin tildes, en
+// mayúsculas, sin signos, y sin palabras vacías (DE, LA, Y…).
+function cd8Tokens(texto) {
+  return cd3Normalizar(texto)
+    .replace(/[^A-Z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t && !CD8_PALABRAS_VACIAS.has(t));
+}
+function cd8Separar(tokens) {
+  return { tipo: tokens.filter((t) => CD8_PALABRAS_TIPO.has(t)), nucleo: tokens.filter((t) => !CD8_PALABRAS_TIPO.has(t)) };
+}
+// Compara el núcleo del nombre (sin "Dirección/Subdirección/Oficina…").
+// Tolera nombres truncados en ControlDoc: "TRANSMIS" coincide con "TRANSMISIBLES".
+function cd8Puntaje(consulta, cand) {
+  const q = consulta.nucleo,
+    c = cand.nucleo;
+  if (!q.length || !c.length) return 0;
+  const coincide = (a, b) => a === b || (a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a)));
+  const cobertura = q.filter((t) => c.some((x) => coincide(t, x))).length / q.length;
+  const precision = c.filter((t) => q.some((x) => coincide(t, x))).length / c.length;
+  let p = 0.65 * cobertura + 0.35 * precision;
+  // "Subdirección" y "Dirección" con el mismo núcleo no son lo mismo.
+  if (consulta.tipo.length && cand.tipo.length) p += consulta.tipo[0] === cand.tipo[0] ? 0.05 : -0.1;
+  return Math.max(0, Math.min(1, p));
+}
+async function cd8CargarCatalogo() {
+  if (CD8_CATALOGO) return CD8_CATALOGO;
+  const resp = await cdFetchGet(CD_CONFIG.urlOficinas);
+  const data = await resp.json();
+  const vistos = new Set();
+  CD8_CATALOGO = (data || [])
+    .filter((o) => o.IDOFICINAPRODUCTORA != null && o.NOMBRE && String(o.ESTADO || 'SI').toUpperCase() !== 'NO')
+    .map((o) => ({ idOficina: Number(o.IDOFICINAPRODUCTORA), idUnidad: Number(o.IDUNIDADADMINISTRATIVA), nombre: o.NOMBRE, ...cd8Separar(cd8Tokens(o.NOMBRE)) }))
+    .filter((o) => {
+      const k = `${o.idUnidad}-${o.idOficina}`;
+      if (vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    });
+  return CD8_CATALOGO;
+}
+// Candidatos ordenados por parecido. Las dependencias ya configuradas en
+// CONFIG_DEPENDENCIAS reciben un pequeño empujón en caso de empate.
+function cd8Candidatos(nombreDependencia, minimo = CD8_PUNTAJE_MINIMO) {
+  const consulta = cd8Separar(cd8Tokens(nombreDependencia));
+  const configuradas = new Set(
+    Object.values(CONFIG_DEPENDENCIAS)
+      .filter((d) => d.idOficina != null)
+      .map((d) => `${d.idUnidad ?? CD2_IDUNIDAD}-${d.idOficina}`),
+  );
+  return (CD8_CATALOGO || [])
+    .map((c) => {
+      let p = cd8Puntaje(consulta, c);
+      if (p > 0 && configuradas.has(`${c.idUnidad}-${c.idOficina}`)) p = Math.min(1, p + 0.05);
+      return { ...c, puntaje: p };
+    })
+    .filter((c) => c.puntaje >= minimo)
+    .sort((a, b) => b.puntaje - a.puntaje)
+    .slice(0, 6);
+}
+// ── Lectura de la tabla ──
+// Acepta: tabla Markdown (con "|"), tabla copiada desde el chat (columnas
+// separadas por tabulador) o JSON [{idc, dependencia, comentario, justificacion}].
+function cd8ParsearTexto(texto) {
+  const t = texto.trim();
+  if (!t) return [];
+  const limpiar = (s) =>
+    String(s ?? '')
+      .replace(/\*\*/g, '')
+      .trim();
+  if (t.startsWith('[') || t.startsWith('{')) {
+    let datos = JSON.parse(t);
+    if (!Array.isArray(datos)) datos = [datos];
+    return datos
+      .map((o) => ({
+        idc: String(o.idc ?? o.IDC ?? '').replace(/\D/g, ''),
+        dependencia: limpiar(Array.isArray(o.dependencia) ? o.dependencia.join(' + ') : (o.dependencia ?? o.DEPENDENCIA)),
+        comentario: limpiar(o.comentario ?? o.COMENTARIO),
+        justificacion: limpiar(o.justificacion ?? o.JUSTIFICACION),
+      }))
+      .filter((f) => f.idc);
+  }
+  const filas = [];
+  for (const linea of t.split(/\r?\n/)) {
+    let celdas;
+    if (linea.includes('|'))
+      celdas = linea
+        .replace(/^\s*\|/, '')
+        .replace(/\|\s*$/, '')
+        .split('|');
+    else if (linea.includes('\t')) celdas = linea.split('\t');
+    else continue;
+    celdas = celdas.map(limpiar);
+    if (celdas.every((c) => c === '' || /^:?-{2,}:?$/.test(c))) continue; // línea separadora
+    const idc = (celdas[0] || '').replace(/\D/g, '');
+    if (!idc) continue; // encabezado
+    filas.push({ idc, dependencia: celdas[1] || '', comentario: celdas[2] || '', justificacion: celdas.slice(3).join(' | ') });
+  }
+  return filas;
+}
+// Varias dependencias en la misma celda: "Dirección X + Subdirección Y" o "X; Y".
+function cd8DividirDependencias(texto) {
+  return String(texto || '')
+    .split(/\s*[+;]\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+// ── Destinos de cada fila ──
+// Cada destino: { texto, candidatos, sel, confianza, confirmado, jefe }
+function cd8NuevoDestino(texto, minimo) {
+  const candidatos = cd8Candidatos(texto, minimo);
+  const [a, b] = candidatos;
+  return {
+    texto,
+    candidatos,
+    sel: candidatos.length ? 0 : -1,
+    jefe: null,
+    confirmado: false,
+    confianza: a && a.puntaje >= CD8_UMBRAL_AUTO && (!b || a.puntaje - b.puntaje >= CD8_MARGEN_AUTO) ? 'alta' : a ? 'baja' : 'ninguna',
+  };
+}
+function cd8Elegido(d) {
+  return d.candidatos[d.sel] || null;
+}
+async function cd8ResolverJefe(d) {
+  const o = cd8Elegido(d);
+  d.jefe = null;
+  if (!o) return;
+  try {
+    d.jefe = (await cd2ObtenerJefe(o.idOficina, o.idUnidad)).NOMBRESAPELLIDOS;
+  } catch (e) {
+    d.jefe = 'error';
+  }
+}
+function cd8CalcularEstado(f) {
+  if (f.estado === 'ok') return;
+  if (f.enBandeja === false) {
+    f.estado = 'error';
+    f.mensaje = 'No está pendiente en tu bandeja (ya se tramitó o no está asignado a ti).';
+    return;
+  }
+  if (!f.destinos.length) {
+    f.estado = 'error';
+    f.mensaje = 'Sin dependencia: agrega una con "➕ Agregar dependencia" o quita la fila.';
+    return;
+  }
+  const sinCoincidencia = f.destinos.findIndex((d) => d.sel < 0);
+  if (sinCoincidencia !== -1) {
+    f.estado = 'error';
+    f.mensaje = `Destino ${sinCoincidencia + 1}: no hay una dependencia parecida en ControlDoc. Búscala con 🔎.`;
+    return;
+  }
+  const sinJefe = f.destinos.findIndex((d) => !d.jefe || d.jefe === 'error');
+  if (sinJefe !== -1) {
+    f.estado = 'error';
+    f.mensaje = `Destino ${sinJefe + 1}: la dependencia no tiene jefe registrado. Elige otra.`;
+    return;
+  }
+  const claves = f.destinos.map((d) => {
+    const o = cd8Elegido(d);
+    return `${o.idUnidad}-${o.idOficina}`;
+  });
+  if (new Set(claves).size !== claves.length) {
+    f.estado = 'revisar';
+    f.mensaje = 'Hay una dependencia repetida entre los destinos.';
+    return;
+  }
+  if (!f.comentario.trim()) {
+    f.estado = 'revisar';
+    f.mensaje = 'El comentario está vacío.';
+    return;
+  }
+  const porConfirmar = f.destinos.findIndex((d) => d.confianza !== 'alta' && !d.confirmado);
+  if (porConfirmar !== -1) {
+    f.estado = 'revisar';
+    f.mensaje = `Destino ${porConfirmar + 1}: el nombre no coincide exacto, confirma la dependencia en la lista.`;
+    return;
+  }
+  f.estado = 'listo';
+  f.mensaje = '';
+}
+async function cd8Recalcular(f) {
+  cd8CalcularEstado(f);
+  cd8PintarFila(f);
+  cd8PintarResumen();
+}
+async function cd8ValidarFila(f) {
+  f.estado = 'validando';
+  cd8PintarFila(f);
+  f.destinos = cd8DividirDependencias(f.dependencia).map((t) => cd8NuevoDestino(t));
+  try {
+    const reg = await cd2BuscarEnBandeja(f.idc);
+    f.enBandeja = true;
+    f.radicado = reg.RADICADO || '';
+    f.asunto = reg.DESCRIPCION || '';
+  } catch (e) {
+    f.enBandeja = false;
+  }
+  if (f.radicado == null) await cd8AsegurarDatos(f); // fuera de la bandeja: se busca igual para mostrar y copiar
+  await Promise.all(f.destinos.map(cd8ResolverJefe));
+  f.estado = 'pendiente';
+  await cd8Recalcular(f);
+}
+async function cd8CargarTabla() {
+  const estado = document.querySelector('#PCD8_Estado');
+  let filas;
+  try {
+    filas = cd8ParsearTexto(document.querySelector('#PCD8_Texto').value);
+  } catch (e) {
+    estado.textContent = '❌ El texto parece JSON pero no es válido: ' + e.message;
+    return;
+  }
+  if (!filas.length) {
+    estado.textContent = 'No encontré filas con IDC. Pega la tabla completa, incluido el encabezado.';
+    return;
+  }
+  const vistos = new Set(),
+    duplicados = [];
+  CD8_FILAS = filas
+    .filter((f) => {
+      if (vistos.has(f.idc)) {
+        duplicados.push(f.idc);
+        return false;
+      }
+      vistos.add(f.idc);
+      return true;
+    })
+    .map((f) => ({
+      ...f,
+      incluirJust: document.querySelector('#PCD8_JustTodas').checked,
+      seleccionado: true,
+      destinos: [],
+      enBandeja: null,
+      radicado: null,
+      asunto: null,
+      estado: 'pendiente',
+      mensaje: '',
+    }));
+  cd8PintarTodo();
+  estado.textContent = '⏳ Cargando el catálogo de dependencias de ControlDoc…';
+  try {
+    await cd8CargarCatalogo();
+  } catch (e) {
+    estado.textContent = '❌ No se pudo cargar el catálogo de dependencias: ' + e.message;
+    return;
+  }
+  estado.textContent = `⏳ Validando 0/${CD8_FILAS.length}…`;
+  await ejecutarConPool(CD8_FILAS.slice(), CD8_CONCURRENCIA_VALIDACION, cd8ValidarFila, (hechos, total) => {
+    estado.textContent = `⏳ Validando ${hechos}/${total}…`;
+  });
+  estado.textContent = `${CD8_FILAS.length} fila(s) cargadas.` + (duplicados.length ? ` Se omitieron IDC repetidos: ${duplicados.join(', ')}.` : '');
+}
+// Radicado y asunto del IDC, con el mismo buscador del panel de Seguimiento
+// (se usa cuando el documento ya no está en la bandeja).
+async function cd8AsegurarDatos(f) {
+  if (f.radicado != null && f.asunto != null) return;
+  try {
+    const doc = await cdBuscarDocumento(String(f.idc));
+    f.radicado = doc.RADICADO || '';
+    f.asunto = doc.DESCRIPCION || '';
+  } catch (e) {
+    f.radicado = f.radicado ?? '';
+    f.asunto = f.asunto ?? '';
+  }
+}
+// Quita la fila de la lista (queda sin dependencia y no se reasigna).
+function cd8QuitarFila(f) {
+  if (['enviando'].includes(f.estado)) return;
+  const idx = CD8_FILAS.indexOf(f);
+  if (idx === -1) return;
+  CD8_FILAS.splice(idx, 1);
+  document.querySelector(`#cd8-fila-${f.idc}`)?.remove();
+  if (!CD8_FILAS.length) cd8PintarTodo();
+  else cd8PintarResumen();
+  const estado = document.querySelector('#PCD8_Estado');
+  if (estado) estado.textContent = `IDC ${f.idc} quitado de la lista.`;
+}
+// ── Comentario final que se envía ──
+function cd8ComentarioFinal(f) {
+  let c = f.comentario.trim();
+  if (f.incluirJust && f.justificacion.trim()) c += ' ' + f.justificacion.trim();
+  const idxSufijo = document.querySelector('#PCD8_Sufijo')?.value;
+  if (idxSufijo !== '' && idxSufijo != null) c += ' ' + CD3_COMENTARIOS_REASIGNACION[Number(idxSufijo)].texto;
+  if (document.querySelector('#PCD8_Mayus')?.checked) c = c.toUpperCase();
+  return c;
+}
+function cd8NombresDestinos(f) {
+  return f.destinos.map((d) => cd8Elegido(d)?.nombre || '?').join(' + ');
+}
+// Igual que en "📊 Result.": la tarjeta queda en verde un momento para que se
+// vea el éxito y luego sale sola de la lista.
+function cd8ProgramarLimpieza(f) {
+  setTimeout(() => {
+    if (f.estado !== 'ok' || !CD8_FILAS.includes(f)) return;
+    const el = document.querySelector(`#cd8-fila-${f.idc}`);
+    if (el) {
+      el.style.transition = 'opacity 0.3s';
+      el.style.opacity = '0';
+    }
+    setTimeout(() => {
+      const idx = CD8_FILAS.indexOf(f);
+      if (idx === -1 || f.estado !== 'ok') return;
+      CD8_FILAS.splice(idx, 1);
+      document.querySelector(`#cd8-fila-${f.idc}`)?.remove();
+      if (!CD8_FILAS.length) cd8PintarTodo();
+      else cd8PintarResumen();
+    }, 300);
+  }, CD8_ESPERA_LIMPIEZA_MS);
+}
+// ── Reasignación ──
+async function cd8ReasignarFila(f) {
+  if (!f.destinos.length || f.estado === 'enviando' || f.estado === 'ok') return;
+  const destinos = f.destinos.map((d) => {
+    const o = cd8Elegido(d);
+    return { idOficina: o.idOficina, idUnidad: o.idUnidad, nombre: o.nombre };
+  });
+  const comentario = cd8ComentarioFinal(f);
+  f.estado = 'enviando';
+  cd8PintarFila(f);
+  try {
+    let movio, radicado, asunto, jefes;
+    if (destinos.length === 1) {
+      const r = await cd2ReasignarADestino(String(f.idc), destinos[0], comentario);
+      movio = r.movioBandeja;
+      radicado = r.radicado;
+      asunto = r.asunto;
+      jefes = r.jefe;
+    } else {
+      const r = await cd2ReasignarADestinos(String(f.idc), destinos, comentario);
+      movio = r.movioBandeja;
+      radicado = r.radicado;
+      asunto = r.asunto;
+      jefes = r.destinos.map((d) => d.jefe).join(' + ');
+    }
+    f.estado = movio ? 'ok' : 'fallo';
+    f.mensaje = movio ? '' : 'Sigue en tu bandeja: el trámite no se completó.';
+    cdBitacoraRegistrar({
+      accion: destinos.length > 1 ? 'Reasignación multi-destino (tabla IA)' : 'Reasignación (tabla IA)',
+      idc: f.idc,
+      radicado,
+      asunto,
+      destino: destinos.map((d) => d.nombre).join(' + '),
+      funcionario: jefes,
+      comentario,
+      resultado: movio ? 'OK' : 'ERROR',
+      detalleResultado: f.mensaje,
+    });
+    cd3SincronizarTrasAccionExterna(f.idc, movio);
+    if (movio) cd8ProgramarLimpieza(f);
+  } catch (e) {
+    f.estado = 'fallo';
+    f.mensaje = e.message;
+  }
+  cd8PintarFila(f);
+  cd8PintarResumen();
+}
+async function cd8ReasignarSeleccionados(soloFallidos = false) {
+  if (CD8_EN_CURSO) return;
+  const objetivo = CD8_FILAS.filter((f) => (soloFallidos ? f.estado === 'fallo' : f.seleccionado && f.estado === 'listo'));
+  if (!objetivo.length) return alert(soloFallidos ? 'No hay filas fallidas para reintentar.' : 'No hay filas seleccionadas en estado "Listo".');
+  const grupos = {};
+  objetivo.forEach((f) => {
+    const n = cd8NombresDestinos(f);
+    grupos[n] = (grupos[n] || 0) + 1;
+  });
+  const resumen = Object.entries(grupos)
+    .map(([n, k]) => `• ${n}: ${k}`)
+    .join('\n');
+  if (!confirm(`Se reasignarán ${objetivo.length} documento(s):\n\n${resumen}\n\n¿Continuar?`)) return;
+  CD8_EN_CURSO = true;
+  const estado = document.querySelector('#PCD8_Estado');
+  await ejecutarMasivo(objetivo, cd8ReasignarFila, (hechos, total, paquete, totalPaquetes) => {
+    estado.textContent = textoProgresoMasivo(hechos, total, paquete, totalPaquetes);
+  });
+  CD8_EN_CURSO = false;
+  const ok = objetivo.filter((f) => f.estado === 'ok').length;
+  estado.textContent = `🏁 ${ok} reasignado(s), ${objetivo.length - ok} con error.`;
+}
+// ── Interfaz ──
+const CD8_ESTILOS_ESTADO = {
+  pendiente: { texto: 'En espera', fondo: '#f3f4f6', color: '#6b7280', borde: '#d1d5db' },
+  validando: { texto: 'Validando…', fondo: '#dbeafe', color: '#1e40af', borde: '#93c5fd' },
+  listo: { texto: 'Listo', fondo: '#dcfce7', color: '#166534', borde: '#22c55e' },
+  revisar: { texto: 'Revisar', fondo: '#fef3c7', color: '#92400e', borde: '#f59e0b' },
+  error: { texto: 'No se puede reasignar', fondo: '#fee2e2', color: '#991b1b', borde: '#ef4444' },
+  enviando: { texto: 'Reasignando…', fondo: '#ffedd5', color: '#9a3412', borde: '#f97316' },
+  ok: { texto: 'Reasignado', fondo: '#16a34a', color: '#fff', borde: '#16a34a' },
+  fallo: { texto: 'Falló', fondo: '#dc2626', color: '#fff', borde: '#dc2626' },
+};
+const CD8_ESTILO_AUX = 'padding:3px 7px; font-size:11px; border:none; border-radius:4px; cursor:pointer;';
+// Acciones de los botones auxiliares (las mismas que en "📊 Result.").
+async function cd8AccionAuxiliar(f, accion, btn) {
+  const original = btn.textContent;
+  const marcar = (t) => {
+    btn.textContent = t;
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 1000);
+  };
+  if (accion.startsWith('copiar-')) {
+    if (accion !== 'copiar-idc') await cd8AsegurarDatos(f);
+    const valor = accion === 'copiar-idc' ? String(f.idc) : accion === 'copiar-rad' ? String(f.radicado || '') : String(f.asunto || '');
+    if (!valor) return alert('Este documento no tiene ese dato disponible.');
+    cdCopiarTexto(valor);
+    return marcar('✓');
+  }
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    if (accion === 'ver-pdf') await cdPrevisualizarPdf(f.idc);
+    else if (accion === 'descargar-pdf') await cdDescargarPdf(f.idc);
+    else if (accion === 'adjuntos') await cdDescargarAdjuntos(f.idc);
+    else if (accion === 'pdf-adjuntos') await cd3DescargarPdfYAdjuntosZip(f.idc);
+  } catch (e) {
+    alert('No se pudo completar la acción: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+function cd8PintarTodo() {
+  const cont = document.querySelector('#PCD8_Lista');
+  if (!cont) return;
+  cont.innerHTML = CD8_FILAS.length
+    ? CD8_FILAS.map((f) => `<div id="cd8-fila-${f.idc}"></div>`).join('')
+    : '<div style="color:#9ca3af; font-size:12px; padding:10px 0;">Pega una tabla arriba y pulsa "Cargar y validar".</div>';
+  CD8_FILAS.forEach(cd8PintarFila);
+  cd8PintarResumen();
+}
+function cd8PintarResumen() {
+  const cont = document.querySelector('#PCD8_Resumen');
+  if (!cont) return;
+  if (!CD8_FILAS.length) {
+    cont.style.display = 'none';
+    return;
+  }
+  cont.style.display = 'flex';
+  const cuenta = (e) => CD8_FILAS.filter((f) => f.estado === e).length;
+  const seleccionListos = CD8_FILAS.filter((f) => f.seleccionado && f.estado === 'listo').length;
+  document.querySelector('#PCD8_Conteos').innerHTML =
+    `${CD8_FILAS.length} en la lista: ✅ ${cuenta('listo')} listos · ⚠️ ${cuenta('revisar')} por revisar · ⛔ ${cuenta('error')} bloqueados · 🚀 ${cuenta('ok')} reasignados · ❌ ${cuenta('fallo')} fallidos`;
+  document.querySelector('#PCD8_ReasignarSel').textContent = `🚀 Reasignar seleccionados (${seleccionListos})`;
+}
+function cd8HtmlDestino(f, d, k, bloqueada) {
+  const opciones = d.candidatos.map((c, i) => `<option value="${i}">${cd8Esc(c.nombre)} (${Math.round(c.puntaje * 100)}%)</option>`).join('');
+  const jefe = !cd8Elegido(d)
+    ? ''
+    : d.jefe === 'error'
+      ? '<span style="color:#dc2626;">Sin jefe registrado</span>'
+      : d.jefe
+        ? `Jefe: ${cd8Esc(d.jefe)}`
+        : '<span style="color:#9ca3af; font-weight:normal;">Buscando jefe…</span>';
+  const aviso = d.confianza !== 'alta' && !d.confirmado && d.candidatos.length ? ' <span title="Coincidencia no exacta: confirma eligiendo en la lista" style="color:#d97706;">⚠️</span>' : '';
+  return `
+<div style="background:#f9fafb; border-radius:6px; padding:5px 6px; margin-top:5px;">
+<div style="display:flex; gap:4px; align-items:center;">
+<span style="font-size:10px; color:#6b7280; white-space:nowrap;">${f.destinos.length > 1 ? `Destino ${k + 1}` : 'Destino'}${aviso}</span>
+<select class="cd8-destino" data-k="${k}" style="flex:1; min-width:0; padding:4px; font-size:11px; border:1px solid #ccc; border-radius:4px;" ${bloqueada || !d.candidatos.length ? 'disabled' : ''}>
+${opciones || `<option>Sin coincidencias para "${cd8Esc(d.texto)}"</option>`}
+</select>
+<button class="cd8-buscar" data-k="${k}" title="Buscar esta dependencia por otro nombre" style="padding:3px 7px; font-size:11px; background:#ede9fe; color:#5b21b6; border:none; border-radius:4px; cursor:pointer;" ${bloqueada ? 'disabled' : ''}>🔎</button>
+<button class="cd8-quitar-destino" data-k="${k}" title="${f.destinos.length > 1 ? 'Quitar este destino' : 'Dejar sin dependencia y quitar el IDC de la lista'}" style="padding:3px 7px; font-size:11px; background:#fee2e2; color:#991b1b; border:none; border-radius:4px; cursor:pointer;" ${bloqueada ? 'disabled' : ''}>✕</button>
+</div>
+<div style="font-size:11px; margin-top:3px; color:#1e3a8a; font-weight:bold;">${jefe}</div>
+</div>`;
+}
+function cd8PintarFila(f) {
+  const el = document.querySelector(`#cd8-fila-${f.idc}`);
+  if (!el) return;
+  const est = CD8_ESTILOS_ESTADO[f.estado] || CD8_ESTILOS_ESTADO.pendiente;
+  const bloqueada = ['enviando', 'ok', 'validando'].includes(f.estado);
+  const puedeEnviar = f.estado === 'listo' || f.estado === 'fallo';
+  el.innerHTML = `
+<div style="border:1px solid #e5e7eb; border-left:4px solid ${est.borde}; border-radius:8px; padding:9px; margin-bottom:8px; ${f.estado === 'ok' ? 'background:#f0fdf4;' : String(f.idc) === CD8_SELECCIONADA ? 'background:#fef9c3; box-shadow:0 0 0 2px #eab308;' : 'background:#fff;'}">
+<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+<label style="display:flex; align-items:center; gap:6px; font-weight:bold; font-size:13px; cursor:pointer;">
+<input type="checkbox" class="cd8-sel" ${f.seleccionado ? 'checked' : ''} ${bloqueada ? 'disabled' : ''}> IDC ${cd8Esc(f.idc)}
+</label>
+<div style="display:flex; align-items:center; gap:6px;">
+<span title="${cd8Esc(f.mensaje)}" style="padding:2px 9px; border-radius:10px; font-size:10px; font-weight:bold; background:${est.fondo}; color:${est.color}; white-space:nowrap;">${est.texto}</span>
+<button class="cd8-quitar-fila" title="Dejar sin dependencia y quitar el IDC de la lista" style="padding:2px 7px; font-size:10px; background:#e5e7eb; color:#374151; border:none; border-radius:4px; cursor:pointer;" ${f.estado === 'enviando' ? 'disabled' : ''}>🧹 Quitar</button>
+</div>
+</div>
+<div style="color:#6b7280; font-size:11px; margin-top:2px;">Radicado: ${f.radicado ? cd8Esc(f.radicado) : f.radicado === null ? '…' : '—'}</div>
+${f.asunto ? `<div style="font-size:11.5px; margin-top:4px; word-break:break-word; color:#111827;">${cd8Esc(f.asunto)}</div>` : ''}
+<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
+<button class="cd8-aux" data-accion="copiar-idc" title="Copiar IDC" style="${CD8_ESTILO_AUX} background:#e5e7eb;">📋 IDC</button>
+<button class="cd8-aux" data-accion="copiar-rad" title="Copiar Radicado" style="${CD8_ESTILO_AUX} background:#e5e7eb;">📋 Rad</button>
+<button class="cd8-aux" data-accion="copiar-asu" title="Copiar Asunto" style="${CD8_ESTILO_AUX} background:#e5e7eb;">📋 Asu</button>
+<button class="cd8-aux" data-accion="ver-pdf" title="Previsualizar el PDF en una pestaña nueva" style="${CD8_ESTILO_AUX} background:#e5e7eb;">👁 Ver PDF</button>
+<button class="cd8-aux" data-accion="descargar-pdf" title="Descargar solo el PDF del documento" style="${CD8_ESTILO_AUX} background:#e0e7ff; color:#3730a3;">⬇ PDF</button>
+<button class="cd8-aux" data-accion="adjuntos" title="Descargar los adjuntos del documento" style="${CD8_ESTILO_AUX} background:#e0e7ff; color:#3730a3;">📎 Adjuntos</button>
+<button class="cd8-aux" data-accion="pdf-adjuntos" title="Descargar el PDF + los adjuntos, juntos en un solo .zip" style="${CD8_ESTILO_AUX} background:#e0e7ff; color:#3730a3;">📦 PDF + Adj.</button>
+</div>
+<div style="color:#6b7280; font-size:10px; margin-top:6px;">Sugerido por la IA: ${cd8Esc(f.dependencia) || '—'}</div>
+${f.destinos.map((d, k) => cd8HtmlDestino(f, d, k, bloqueada)).join('')}
+<button class="cd8-agregar-destino" style="margin-top:5px; padding:4px 8px; font-size:11px; background:#eef2ff; color:#3730a3; border:1px dashed #a5b4fc; border-radius:4px; cursor:pointer;" ${bloqueada ? 'disabled' : ''}>➕ Agregar dependencia</button>
+<textarea class="cd8-comentario" rows="2" style="width:100%; margin-top:5px; padding:4px; font-size:11px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;" ${bloqueada ? 'disabled' : ''}>${cd8Esc(f.comentario)}</textarea>
+<div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-top:4px; flex-wrap:wrap;">
+<label title="${cd8Esc(f.justificacion || 'Sin justificación en la tabla')}" style="font-size:11px; color:#4b5563; cursor:pointer; display:flex; align-items:center; gap:4px;">
+<input type="checkbox" class="cd8-just" ${f.incluirJust ? 'checked' : ''} ${bloqueada || !f.justificacion ? 'disabled' : ''}> Agregar justificación al comentario
+</label>
+<button class="cd8-enviar" style="padding:5px 10px; font-size:11px; font-weight:bold; background:#111827; color:#fff; border:none; border-radius:5px; cursor:${puedeEnviar ? 'pointer' : 'not-allowed'}; opacity:${puedeEnviar ? '1' : '0.4'};" ${puedeEnviar ? '' : 'disabled'}>🚀 Reasignar${f.destinos.length > 1 ? ` (${f.destinos.length} destinos)` : ''}</button>
+</div>
+${f.mensaje ? `<div style="font-size:10.5px; color:${est.color === '#fff' ? est.fondo : est.color}; margin-top:4px;">${cd8Esc(f.mensaje)}</div>` : ''}
+</div>`;
+  el.firstElementChild.addEventListener('click', () => {
+    if (CD8_SELECCIONADA === String(f.idc)) return;
+    const anterior = CD8_FILAS.find((x) => String(x.idc) === CD8_SELECCIONADA);
+    CD8_SELECCIONADA = String(f.idc);
+    if (anterior) cd8PintarFila(anterior);
+    cd8PintarFila(f);
+  });
+  el.querySelectorAll('.cd8-destino').forEach((sel) => {
+    const d = f.destinos[Number(sel.dataset.k)];
+    if (d.candidatos.length) sel.value = String(d.sel);
+    sel.onchange = async () => {
+      d.sel = Number(sel.value);
+      d.confirmado = true;
+      d.jefe = null;
+      cd8PintarFila(f);
+      await cd8ResolverJefe(d);
+      cd8Recalcular(f);
+    };
+  });
+  el.querySelectorAll('.cd8-buscar').forEach((btn) => {
+    btn.onclick = async () => {
+      const k = Number(btn.dataset.k);
+      const texto = prompt('Escribe parte del nombre de la dependencia (sin importar tildes):', f.destinos[k].texto);
+      if (!texto || !texto.trim()) return;
+      const nuevo = cd8NuevoDestino(texto.trim(), 0.2);
+      if (!nuevo.candidatos.length) return alert('Sin coincidencias. Prueba con otra palabra clave del nombre.');
+      f.destinos[k] = nuevo;
+      cd8PintarFila(f);
+      await cd8ResolverJefe(nuevo);
+      cd8Recalcular(f);
+    };
+  });
+  el.querySelectorAll('.cd8-quitar-destino').forEach((btn) => {
+    btn.onclick = () => {
+      if (f.destinos.length <= 1) return cd8QuitarFila(f); // sin dependencia → sale de la lista
+      f.destinos.splice(Number(btn.dataset.k), 1);
+      cd8Recalcular(f);
+    };
+  });
+  el.querySelector('.cd8-agregar-destino').onclick = async () => {
+    if (!CD8_CATALOGO) return alert('Primero carga la tabla para traer el catálogo de dependencias.');
+    const texto = prompt(`Dependencia adicional para el IDC ${f.idc} (escribe parte del nombre, sin importar tildes):`, '');
+    if (!texto || !texto.trim()) return;
+    const nuevo = cd8NuevoDestino(texto.trim(), 0.2);
+    if (!nuevo.candidatos.length) return alert('Sin coincidencias. Prueba con otra palabra clave del nombre.');
+    nuevo.confirmado = true; // la eligió el usuario a mano
+    f.destinos.push(nuevo);
+    cd8PintarFila(f);
+    await cd8ResolverJefe(nuevo);
+    cd8Recalcular(f);
+  };
+  el.querySelectorAll('.cd8-aux').forEach((btn) => {
+    btn.onclick = () => cd8AccionAuxiliar(f, btn.dataset.accion, btn);
+  });
+  el.querySelector('.cd8-quitar-fila').onclick = () => cd8QuitarFila(f);
+  el.querySelector('.cd8-sel').onchange = (e) => {
+    f.seleccionado = e.target.checked;
+    cd8PintarResumen();
+  };
+  el.querySelector('.cd8-just').onchange = (e) => {
+    f.incluirJust = e.target.checked;
+  };
+  el.querySelector('.cd8-comentario').addEventListener('input', (e) => {
+    const estabaVacio = !f.comentario.trim();
+    f.comentario = e.target.value;
+    if (estabaVacio !== !f.comentario.trim()) {
+      cd8CalcularEstado(f);
+      cd8PintarResumen();
+    }
+  });
+  el.querySelector('.cd8-enviar').onclick = () => {
+    const detalle = f.destinos.map((d, k) => `${k + 1}. ${cd8Elegido(d).nombre} — Jefe: ${d.jefe}`).join('\n');
+    if (!confirm(`Reasignar el IDC ${f.idc} a:\n\n${detalle}\n\nComentario:\n${cd8ComentarioFinal(f)}`)) return;
+    cd8ReasignarFila(f);
+  };
+}
+function cd8InyectarPestana() {
+  const cuerpoGeneral = document.querySelector('#PCD_CuerpoGeneral');
+  if (!cuerpoGeneral || document.querySelector('#PCD_CuerpoSec10')) return;
+  const div = document.createElement('div');
+  div.id = 'PCD_CuerpoSec10';
+  div.style.display = 'none';
+  div.innerHTML = `
+<p style="color:#6b7280; font-size:11px; margin:0 0 6px;">Pega la tabla que generó la IA, tal cual: en Markdown o copiada directamente de la tabla del chat. Columnas: IDC, dependencia, comentario y justificación (opcional). Si un IDC va a varias dependencias, sepáralas con "+" o ";" en la misma celda. También acepta JSON.</p>
+<textarea id="PCD8_Texto" rows="6" placeholder="| IDC | NOMBRE DEPENDENCIA COMPETENTE | COMENTARIO BREVE | JUSTIFICACIÓN |&#10;|---|---|---|---|&#10;| 2357356 | Subdirección de Salud Ambiental y Cambio Climático | ... | ... |" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; font-size:11px; box-sizing:border-box;"></textarea>
+<div style="display:flex; gap:6px; margin:6px 0;">
+<button id="PCD8_Cargar" style="flex:1; padding:8px; background:#4f46e5; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">📥 Cargar y validar</button>
+<button id="PCD8_Limpiar" style="padding:8px 12px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer; font-size:12px;">🗑 Limpiar</button>
+</div>
+<div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:11px; color:#4b5563; margin-bottom:6px;">
+<label style="cursor:pointer;"><input type="checkbox" id="PCD8_Mayus" checked> Comentario en mayúsculas</label>
+<label style="cursor:pointer;"><input type="checkbox" id="PCD8_JustTodas"> Agregar justificación en todas</label>
+<label>Agregar al final:
+<select id="PCD8_Sufijo" style="padding:3px; font-size:11px; border:1px solid #ccc; border-radius:4px; max-width:220px;">
+<option value="">Nada</option>
+${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd8Esc(cd3TruncarTexto(c.etiqueta, 45))}</option>`).join('')}
+</select>
+</label>
+</div>
+<div id="PCD8_Estado" style="font-size:12px; color:#6b7280; margin-bottom:6px;"></div>
+<div id="PCD8_Resumen" style="display:none; flex-direction:column; gap:6px; padding:8px; background:#f9fafb; border-radius:6px; margin-bottom:8px;">
+<div id="PCD8_Conteos" style="font-size:11px; color:#374151;"></div>
+<div style="display:flex; gap:5px; flex-wrap:wrap;">
+<button id="PCD8_SelListos" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">☑ Solo los listos</button>
+<button id="PCD8_SelNinguno" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">☐ Ninguno</button>
+<button id="PCD8_QuitarBloqueados" title="Quita de la lista los IDC que no se pueden reasignar" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🧹 Quitar bloqueados</button>
+<button id="PCD8_QuitarReasignados" title="Quita de la lista los IDC ya reasignados" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🧹 Quitar reasignados</button>
+<button id="PCD8_Reintentar" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">🔁 Reintentar fallidos</button>
+<button id="PCD8_CopiarPendientes" style="padding:4px 8px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Copiar IDC no reasignados</button>
+</div>
+<button id="PCD8_ReasignarSel" style="padding:8px; background:#16a34a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 Reasignar seleccionados (0)</button>
+</div>
+<div id="PCD8_Lista" style="max-height:520px; overflow-y:auto;"></div>`;
+  cuerpoGeneral.appendChild(div);
+  const quitarPorEstado = (estadoObjetivo, etiqueta) => {
+    if (CD8_EN_CURSO) return;
+    const antes = CD8_FILAS.length;
+    CD8_FILAS = CD8_FILAS.filter((f) => f.estado !== estadoObjetivo);
+    cd8PintarTodo();
+    document.querySelector('#PCD8_Estado').textContent = `${antes - CD8_FILAS.length} IDC ${etiqueta} quitados de la lista.`;
+  };
+  document.querySelector('#PCD8_Cargar').onclick = cd8CargarTabla;
+  document.querySelector('#PCD8_Limpiar').onclick = () => {
+    if (CD8_EN_CURSO) return;
+    CD8_FILAS = [];
+    CD8_SELECCIONADA = null;
+    document.querySelector('#PCD8_Texto').value = '';
+    document.querySelector('#PCD8_Estado').textContent = '';
+    cd8PintarTodo();
+  };
+  document.querySelector('#PCD8_JustTodas').onchange = (e) => {
+    CD8_FILAS.forEach((f) => {
+      if (f.justificacion && !['ok', 'enviando'].includes(f.estado)) {
+        f.incluirJust = e.target.checked;
+        cd8PintarFila(f);
+      }
+    });
+  };
+  document.querySelector('#PCD8_SelListos').onclick = () => {
+    CD8_FILAS.forEach((f) => {
+      f.seleccionado = f.estado === 'listo';
+      cd8PintarFila(f);
+    });
+    cd8PintarResumen();
+  };
+  document.querySelector('#PCD8_SelNinguno').onclick = () => {
+    CD8_FILAS.forEach((f) => {
+      f.seleccionado = false;
+      cd8PintarFila(f);
+    });
+    cd8PintarResumen();
+  };
+  document.querySelector('#PCD8_QuitarBloqueados').onclick = () => quitarPorEstado('error', 'bloqueados');
+  document.querySelector('#PCD8_QuitarReasignados').onclick = () => quitarPorEstado('ok', 'ya reasignados');
+  document.querySelector('#PCD8_ReasignarSel').onclick = () => cd8ReasignarSeleccionados(false);
+  document.querySelector('#PCD8_Reintentar').onclick = () => cd8ReasignarSeleccionados(true);
+  document.querySelector('#PCD8_CopiarPendientes').onclick = () => {
+    const ids = CD8_FILAS.filter((f) => f.estado !== 'ok').map((f) => f.idc);
+    if (!ids.length) return alert('Todas las filas ya fueron reasignadas.');
+    cdCopiarTexto(ids.join('\n'));
+    document.querySelector('#PCD8_Estado').textContent = `📋 ${ids.length} IDC copiados.`;
+  };
+  cd8PintarTodo();
 }
 
 // ════════════════════════════════════════════════════════════════
