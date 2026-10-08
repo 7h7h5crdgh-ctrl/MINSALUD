@@ -4068,6 +4068,12 @@ function cd7ObservacionFirma() {
   return v || CD7_OBSERVACION_FIRMA_DEFAULT;
 }
 
+// Instrucción con la que llegó la tarea (define cómo se abre en el editor).
+function cd7InstruccionFila(fila) {
+  if (fila.instruccion === 'APROBAR' || fila.instruccion === 'REVISAR') return fila.instruccion;
+  return fila.lista === 'aprobar' || CD7_LISTA_ACTIVA === 'aprobar' ? 'APROBAR' : 'REVISAR';
+}
+
 function cd7AprobarParaFirma(fila) {
   // Sin fila de espera: cada aprobación arranca de inmediato en su propia copia
   // oculta de ControlDoc, así que varias tarjetas se procesan al mismo tiempo.
@@ -4093,10 +4099,13 @@ async function cd7AprobarParaFirmaAhora(fila) {
     const ruta = (W.GLOBALES && W.GLOBALES.URL) || 'https://controldoc.minsalud.gov.co/Controldoc//';
     W.jQuery('#page_content_inner').empty().load(ruta + 'TareasDoc/CrearDoc', {
       TipoDocumento: cd7TipoDocCodigo(fila.tipoDoc), IdTareaInicial: fila.idInicial, IdTareaActual: fila.idTarea,
-      Editar: 'SI', INSTRUCCIONES: 'APROBAR', IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
+      // La tarea se abre con su instrucción real (REVISAR o APROBAR), igual que al
+      // abrirla desde la bandeja; la acción "Aprobar" se elige después, como haría
+      // una persona (ControlDoc permite aprobar también desde una tarea de revisión).
+      Editar: 'SI', INSTRUCCIONES: cd7InstruccionFila(fila), IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
     });
 
-    CD7_MOVS.push({ ts: Date.now(), estado: 'PREPARADO', idTarea: fila.idTarea, idInicial: fila.idInicial, asunto: fila.asunto, listaOrigen: 'Por aprobar', accion: 'APROBAR → FIRMAR', destinatario: '', idDestinatario: '', comentario: obs, comentarioPreparado: obs, fechaPaso: '', login: CD7_SESION.login || '', detalle: 'Aprobación para firma enviada desde el panel' });
+    CD7_MOVS.push({ ts: Date.now(), estado: 'PREPARADO', idTarea: fila.idTarea, idInicial: fila.idInicial, asunto: fila.asunto, listaOrigen: cd7InstruccionFila(fila) === 'APROBAR' ? 'Por aprobar' : 'Por revisar', accion: 'APROBAR → FIRMAR', destinatario: '', idDestinatario: '', comentario: obs, comentarioPreparado: obs, fechaPaso: '', login: CD7_SESION.login || '', detalle: 'Aprobación para firma enviada desde el panel' });
     cd7GuardarMovs();
 
     await cd7EsperarA(() => typeof W.TDOC_RADICAR === 'function' && typeof W.TDOC_GUARDARDOC === 'function'
@@ -4155,8 +4164,9 @@ async function cd7AprobarParaFirmaAhora(fila) {
     // Confirmación real: la tarea ya no debe estar en "Por aprobar".
     let salio = null;
     try {
-      const pendientes = await cd7ConsultarLista('aprobar', CD7_SESION.id || CD7_CUENTA.idFuncionario);
-      salio = !pendientes.some(f => String(f.idTarea) === String(fila.idTarea));
+      const id = CD7_SESION.id || CD7_CUENTA.idFuncionario;
+      const [rev, apr] = await Promise.all([cd7ConsultarLista('revisar', id), cd7ConsultarLista('aprobar', id)]);
+      salio = ![...rev, ...apr].some(f => String(f.idTarea) === String(fila.idTarea));
     } catch (e) { salio = null; }
 
     const ult = [...CD7_MOVS].reverse().find(m => m.estado === 'PREPARADO' && String(m.idInicial) === String(fila.idInicial));
@@ -4169,8 +4179,8 @@ async function cd7AprobarParaFirmaAhora(fila) {
       // La tarjeta queda en verde un momento y luego sale de la lista (pasa a "📬 Aprobados para firma").
       setTimeout(() => { delete CD7_FASES[String(fila.idTarea)]; cd7CargarListas(); }, 2500);
     } else {
-      cd7MarcarFase(fila, 'error', `⚠️ ${radicado ? `Radicado ${cd7Esc(radicado)}, pero ` : ''}${salio === false ? 'sigue en "Por aprobar"' : 'sin confirmar'} · revísala`);
-      cd7Aviso(`⚠️ Tarea ${fila.idInicial}: ${radicado ? `se radicó (<b>${cd7Esc(radicado)}</b>) pero ` : ''}${salio === false ? 'sigue en "Por aprobar"' : 'no se pudo confirmar si salió de "Por aprobar"'}${!cerro ? ' y ControlDoc no cerró el editor' : ''}.${mensajeControlDoc ? ` Mensaje de ControlDoc: ${cd7Esc(mensajeControlDoc.slice(0, 200))}` : ''} Revísala con 📝 Abrir documento.`, 'aviso');
+      cd7MarcarFase(fila, 'error', `⚠️ ${radicado ? `Radicado ${cd7Esc(radicado)}, pero ` : ''}${salio === false ? 'sigue en tu bandeja' : 'sin confirmar'} · revísala`);
+      cd7Aviso(`⚠️ Tarea ${fila.idInicial}: ${radicado ? `se radicó (<b>${cd7Esc(radicado)}</b>) pero ` : ''}${salio === false ? 'sigue en tu bandeja' : 'no se pudo confirmar si salió de tu bandeja'}${!cerro ? ' y ControlDoc no cerró el editor' : ''}.${mensajeControlDoc ? ` Mensaje de ControlDoc: ${cd7Esc(mensajeControlDoc.slice(0, 200))}` : ''} Revísala con 📝 Abrir documento.`, 'aviso');
     }
   } catch (e) {
     cd7Aviso(`❌ Tarea ${fila.idInicial}: ${cd7Esc(e.message)}. No se envió nada.`, 'error');
@@ -4363,7 +4373,7 @@ async function cd7DevolverAhora(fila, destino, obs) {
     marco = await cd7CrearControlDocOculto();
     const W = marco.contentWindow, D = marco.contentDocument;
     const ruta = (W.GLOBALES && W.GLOBALES.URL) || 'https://controldoc.minsalud.gov.co/Controldoc//';
-    const instruccion = fila.instruccion === 'APROBAR' || CD7_LISTA_ACTIVA === 'aprobar' ? 'APROBAR' : 'REVISAR';
+    const instruccion = cd7InstruccionFila(fila);
     W.jQuery('#page_content_inner').empty().load(ruta + 'TareasDoc/CrearDoc', {
       TipoDocumento: cd7TipoDocCodigo(fila.tipoDoc), IdTareaInicial: fila.idInicial, IdTareaActual: fila.idTarea,
       Editar: 'SI', INSTRUCCIONES: instruccion, IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
@@ -4670,7 +4680,7 @@ function cd7RenderLista() {
         <button class="cd7-btn-bajar-pdf" data-id="${cd7Esc(f.idTarea)}" ${f.nombreArchivo ? '' : 'disabled'} style="padding:6px 11px; background:#e5e7eb; border:none; border-radius:5px; cursor:${f.nombreArchivo ? 'pointer' : 'not-allowed'}; font-size:12px; font-weight:600;${f.nombreArchivo ? '' : ' opacity:0.5;'}">⬇ PDF</button>
         ${(() => { const e = cd4EstadoBotonAdjuntos(f); return `<button class="cd7-btn-adjuntos" data-id="${cd7Esc(f.idTarea)}" title="${cd7Esc(e.titulo)}" ${e.activo ? '' : 'disabled'} style="padding:6px 11px; background:${e.fondo}; color:${e.color}; border:none; border-radius:5px; cursor:${e.activo ? 'pointer' : 'not-allowed'}; font-size:12px; font-weight:600;">📎 ${e.texto}</button>`; })()}
         ${puedePreparar ? `<button class="cd7-btn-abrir-doc" data-id="${cd7Esc(f.idTarea)}" title="Abre esta tarea en el editor de ControlDoc (la misma pantalla de la bandeja)" style="padding:6px 11px; background:#0f766e; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📝 Abrir documento</button>` : ''}
-        ${puedePreparar && (CD7_LISTA_ACTIVA === 'aprobar' || f.instruccion === 'APROBAR') ? `<button class="cd7-btn-aprobar-firma" data-id="${cd7Esc(f.idTarea)}" title="Un clic: aprueba y envía a la bandeja de firma en segundo plano (radica directo, sin abrir nada)" style="padding:6px 11px; background:#16a34a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">✍️ Aprobar para firma</button>` : ''}
+        ${puedePreparar ? `<button class="cd7-btn-aprobar-firma" data-id="${cd7Esc(f.idTarea)}" title="Un clic: aprueba y envía a la bandeja de firma en segundo plano (radica directo, sin abrir nada)" style="padding:6px 11px; background:#16a34a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">✍️ Aprobar para firma</button>` : ''}
         ${puedePreparar ? `<button class="cd7-btn-devolver" data-id="${cd7Esc(f.idTarea)}" title="Devuelve la tarea a quien la proyectó o a quien te la envió (en segundo plano, sin abrir nada)" style="padding:6px 11px; background:#b45309; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">↩️ ${CD7_DEVOLVER[f.idTarea] ? 'Cerrar devolución' : 'Devolver'}</button>` : ''}
         ${puedePreparar ? `<button class="cd7-btn-preparar" data-id="${cd7Esc(f.idTarea)}" style="padding:6px 11px; background:#7c3aed; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📤 Preparar envío</button>` : ''}
       </div>
