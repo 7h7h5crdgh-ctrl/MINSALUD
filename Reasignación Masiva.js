@@ -3927,9 +3927,8 @@ async function cd7AbrirDocumentoNativo(fila, instruccion) {
 // función de ControlDoc que dispara los endpoints del HAR: RadicarTarea →
 // ActProcesadoSi → RegistrarTareaDoc → InsertarDestinatarios → guardado del
 // PDF. Tu pantalla no cambia: solo ves el aviso de la esquina.
-// Si pulsas varias tarjetas, se procesan en fila, una detrás de otra.
+// Si pulsas varias tarjetas, se procesan al mismo tiempo (una copia oculta por tarjeta).
 const CD7_URL_INICIO = 'https://controldoc.minsalud.gov.co/Controldoc/Home/Index';
-let CD7_COLA_FIRMA = Promise.resolve();
 
 // Estado en vivo de cada aprobación (se pinta en la tarjeta mientras ocurre).
 // fase: 'cola' | 'proceso' | 'aprobado' | 'error'
@@ -3939,6 +3938,7 @@ const CD7_ESTILO_FASE = {
   proceso:  { fondo: '#ffedd5', color: '#9a3412', borde: '#f97316', tarjeta: 'background:#fff7ed; box-shadow:0 0 0 2px #f97316;' },
   aprobado: { fondo: '#dcfce7', color: '#166534', borde: '#22c55e', tarjeta: 'background:#f0fdf4; box-shadow:0 0 0 2px #22c55e;' },
   error:    { fondo: '#fee2e2', color: '#991b1b', borde: '#ef4444', tarjeta: 'background:#fef2f2; box-shadow:0 0 0 2px #ef4444;' },
+  devuelto: { fondo: '#fef3c7', color: '#92400e', borde: '#d97706', tarjeta: 'background:#fffbeb; box-shadow:0 0 0 2px #d97706;' },
 };
 
 function cd7HtmlFase(idTarea) {
@@ -4069,12 +4069,12 @@ function cd7ObservacionFirma() {
 }
 
 function cd7AprobarParaFirma(fila) {
+  // Sin fila de espera: cada aprobación arranca de inmediato en su propia copia
+  // oculta de ControlDoc, así que varias tarjetas se procesan al mismo tiempo.
   CD7_FIRMA_PENDIENTES++;
-  if (CD7_FIRMA_PENDIENTES > 1) cd7Aviso(`🕒 Tarea ${fila.idInicial} en fila (${CD7_FIRMA_PENDIENTES - 1} antes).`);
-  cd7MarcarFase(fila, 'cola', CD7_FIRMA_PENDIENTES > 1 ? `🕒 En fila para aprobar (${CD7_FIRMA_PENDIENTES - 1} antes)` : '🕒 Iniciando aprobación…');
-  const tarea = CD7_COLA_FIRMA.then(() => cd7AprobarParaFirmaAhora(fila)).finally(() => { CD7_FIRMA_PENDIENTES--; });
-  CD7_COLA_FIRMA = tarea.catch(() => {});
-  return tarea;
+  if (CD7_FIRMA_PENDIENTES > 1) cd7Aviso(`⚡ ${CD7_FIRMA_PENDIENTES} documentos procesándose al mismo tiempo.`);
+  cd7MarcarFase(fila, 'cola', '🕒 Iniciando aprobación…');
+  return cd7AprobarParaFirmaAhora(fila).finally(() => { CD7_FIRMA_PENDIENTES--; });
 }
 
 async function cd7AprobarParaFirmaAhora(fila) {
@@ -4180,6 +4180,268 @@ async function cd7AprobarParaFirmaAhora(fila) {
   }
 }
 
+// ── ↩️ Devolver (a quien proyectó o a quien te lo envió) ──
+// Según el HAR de una devolución nativa, ControlDoc hace: ActProcesadoSi →
+// RegistrarTareaDoc (CODIGO/ESTADOTAREA "DEVOLVER", INSTRUCCION "REVISAR",
+// IDFUNCIONARIOTAREA = destinatario, OBSERVACIONES) → InsertarDestinatarios →
+// RegistrarCompletoAccionProyectados → guardado del PDF en el editor. No radica.
+// Igual que "Aprobar para firma", se hace en la copia oculta de ControlDoc
+// para que sea su propio código el que guarde el documento y cree el paso.
+// Destinos posibles (tomados del flujo de la tarea):
+//   · "proyecto": quien creó el primer paso (el que proyectó el documento).
+//   · "ultimo":   quien creó el paso actual (quien te lo envió). Es lo mismo
+//                 que hace el "Devolver" nativo de ControlDoc.
+const CD7_DEVOLVER = {};   // idTarea -> { estado: 'cargando'|'listo'|'error', opciones, eleccion, obs, error }
+
+// Los dos destinos posibles según el flujo (null si no existe o eres tú).
+async function cd7DestinosDevolver(fila) {
+  const z = CD7_TRAZA[fila.idTarea];
+  const pasos = (z && z.estado === 'ok') ? z.pasos : await cd7ObtenerPasos(fila);
+  if (!(z && z.estado === 'ok')) CD7_TRAZA[fila.idTarea] = { estado: 'ok', pasos };
+  if (!pasos.length) throw new Error('La tarea no tiene flujo');
+  const yo = Number(CD7_SESION.id) || 0;
+  const primero = pasos.find(p => p.estadoTarea === 'PROYECTAR') || pasos[0];
+  const actual = pasos.find(p => String(p.idTarea) === String(fila.idTarea)) || pasos[pasos.length - 1];
+  const crear = (p, clave) => (p && p.idDe && p.idDe !== yo) ? { clave, id: p.idDe, nombre: p.de } : null;
+  return { proyecto: crear(primero, 'proyecto'), ultimo: crear(actual, 'ultimo') };
+}
+
+async function cd7OpcionesDevolver(fila) {
+  const { proyecto, ultimo } = await cd7DestinosDevolver(fila);
+  const opciones = [];
+  if (proyecto) opciones.push({ ...proyecto, etiqueta: '✏️ A quien proyectó' });
+  if (ultimo) {
+    const igual = opciones.find(o => o.id === ultimo.id);
+    if (igual) igual.etiqueta = '✏️📨 A quien proyectó (y te lo envió)';
+    else opciones.push({ ...ultimo, etiqueta: '📨 A quien te lo envió' });
+  }
+  if (!opciones.length) throw new Error('No hay a quién devolverla (el flujo solo te tiene a ti)');
+  return opciones;
+}
+
+// ── ↩️ Devolución masiva ──
+// Marcas las tarjetas (casilla "Lote"), eliges el destino (a quien proyectó /
+// a quien te lo envió) y una observación común, y se devuelven AL MISMO TIEMPO,
+// en paquetes del tamaño que elijas en "Simultáneas" (cada una en su propia copia
+// oculta de ControlDoc). Se espera a que termine el paquete y sigue el siguiente.
+const CD7_DEV_SIMULTANEAS_DEFAULT = 5;
+const CD7_DEV_SIMULTANEAS_TOPE = 30;
+const CD7_SEL_DEV = new Set();   // idTarea marcadas para devolver en lote
+let CD7_DEV_MASIVA_CONFIRMAR = false;
+
+function cd7FilaPorId(id) {
+  return [...(CD7_DATOS.revisar || []), ...(CD7_DATOS.aprobar || [])].find(f => String(f.idTarea) === String(id)) || null;
+}
+
+function cd7RenderSelDev() {
+  // Limpia marcas de tareas que ya no están en tus listas.
+  [...CD7_SEL_DEV].forEach(id => { if (!cd7FilaPorId(id)) CD7_SEL_DEV.delete(id); });
+  const n = CD7_SEL_DEV.size;
+  const btn = cd7Q('#PCD_SegDevMasivaBtn');
+  if (btn && !btn.dataset.ocupado) {
+    btn.textContent = CD7_DEV_MASIVA_CONFIRMAR ? `⚠️ Confirmar: devolver ${n}` : `↩️ Devolver seleccionadas (${n})`;
+    btn.style.background = CD7_DEV_MASIVA_CONFIRMAR ? '#dc2626' : '#b45309';
+    btn.disabled = !n; btn.style.opacity = n ? '1' : '0.5'; btn.style.cursor = n ? 'pointer' : 'not-allowed';
+  }
+  document.querySelectorAll('.cd7-sel-dev').forEach(c => { c.checked = CD7_SEL_DEV.has(String(c.dataset.id)); });
+}
+
+function cd7SeleccionarDev(modo, n) {
+  CD7_DEV_MASIVA_CONFIRMAR = false;
+  if (modo === 'ninguna') CD7_SEL_DEV.clear();
+  else {
+    const filas = cd7FilasVisibles();
+    (modo === 'primeros' ? filas.slice(0, n) : filas).forEach(f => CD7_SEL_DEV.add(String(f.idTarea)));
+  }
+  cd7RenderSelDev();
+}
+
+async function cd7DevolverMasivo() {
+  const estado = cd7Q('#PCD_SegDevMasivaEstado');
+  const btn = cd7Q('#PCD_SegDevMasivaBtn');
+  const clave = cd7Q('#PCD_SegDevMasivaDestino').value;
+  const obs = (cd7Q('#PCD_SegDevMasivaObs').value || '').trim();
+  const filas = [...CD7_SEL_DEV].map(cd7FilaPorId).filter(Boolean);
+  const pinta = (txt, color = '#92400e') => { estado.style.color = color; estado.innerHTML = txt; };
+  if (!filas.length) return pinta('Marca al menos una tarea (casilla "Lote" en cada tarjeta).', '#dc2626');
+  if (!obs) { cd7Q('#PCD_SegDevMasivaObs').focus(); return pinta('Escribe la observación de la devolución.', '#dc2626'); }
+  if (!CD7_DEV_MASIVA_CONFIRMAR) { CD7_DEV_MASIVA_CONFIRMAR = true; cd7RenderSelDev(); return pinta(`Vuelve a pulsar para confirmar la devolución de <b>${filas.length}</b> tarea(s) ${clave === 'proyecto' ? 'a quien las proyectó' : 'a quien te las envió'}.`); }
+
+  CD7_DEV_MASIVA_CONFIRMAR = false;
+  CD7_SEL_DEV.clear();
+  btn.dataset.ocupado = '1'; btn.disabled = true; btn.textContent = '⏳ Devolviendo…';
+  cd7RenderLista();
+  let hechas = 0, omitidas = 0, terminadas = 0;
+  const total = filas.length;
+  const progreso = () => pinta(`⏳ Devolución masiva: ${terminadas}/${total} procesada(s) · ✅ ${hechas} devuelta(s)${omitidas ? ` · ⚠️ ${omitidas} sin devolver` : ''}`);
+  progreso();
+  filas.forEach(f => cd7MarcarFase(f, 'cola', '🕒 Buscando destinatario para la devolución…'));
+
+  // 1) Destinatario de cada tarea (consultas en paralelo, solo lectura).
+  const destinos = {};
+  await ejecutarConPool(filas, 3, async (f) => {
+    try {
+      const d = await cd7DestinosDevolver(f);
+      destinos[f.idTarea] = d[clave] || null;
+      if (!destinos[f.idTarea]) throw new Error(clave === 'proyecto' ? 'la proyectaste tú (no hay a quién devolverla)' : 'no hay quién te la haya enviado');
+    } catch (e) {
+      destinos[f.idTarea] = null;
+      omitidas++; terminadas++;
+      cd7MarcarFase(f, 'error', `❌ No se devolvió: ${cd7Esc(e.message)}`);
+      progreso();
+    }
+  }, () => {});
+
+  // 2) Devoluciones simultáneas por paquetes (cada una confirma que la tarea salió de tu bandeja).
+  const simultaneas = Math.min(CD7_DEV_SIMULTANEAS_TOPE, Math.max(1, Number(cd7Q('#PCD_SegDevSimultaneas')?.value) || CD7_DEV_SIMULTANEAS_DEFAULT));
+  const listas = filas.filter(f => destinos[f.idTarea]);
+  for (let i = 0; i < listas.length; i += simultaneas) {
+    const paquete = listas.slice(i, i + simultaneas);
+    pinta(`⚡ Devolviendo ${paquete.length} al mismo tiempo (paquete ${Math.floor(i / simultaneas) + 1} de ${Math.ceil(listas.length / simultaneas)}) · ${terminadas}/${total} procesada(s) · ✅ ${hechas}${omitidas ? ` · ⚠️ ${omitidas}` : ''}`);
+    await Promise.allSettled(paquete.map(f =>
+      cd7Devolver(f, destinos[f.idTarea], obs).then((ok) => {
+        terminadas++;
+        if (ok) hechas++; else omitidas++;
+      })));
+  }
+  delete btn.dataset.ocupado;
+  pinta(`✅ Devolución masiva terminada: ${hechas} de ${total} devuelta(s)${omitidas ? ` · ⚠️ ${omitidas} sin devolver (quedan marcadas en rojo con el motivo)` : ''}.`, omitidas ? '#92400e' : '#16a34a');
+  cd7Aviso(`↩️ Devolución masiva: <b>${hechas}</b> de ${total} devuelta(s)${omitidas ? `, ${omitidas} sin devolver` : ''}.`, omitidas ? 'aviso' : 'ok');
+  cd7RenderSelDev();
+}
+
+async function cd7AbrirDevolver(fila) {
+  if (CD7_DEVOLVER[fila.idTarea] && CD7_DEVOLVER[fila.idTarea].estado !== 'error') { delete CD7_DEVOLVER[fila.idTarea]; cd7RenderLista(); return; }
+  CD7_DEVOLVER[fila.idTarea] = { estado: 'cargando', obs: '' };
+  cd7RenderLista();
+  try {
+    const opciones = await cd7OpcionesDevolver(fila);
+    CD7_DEVOLVER[fila.idTarea] = { estado: 'listo', opciones, eleccion: opciones[opciones.length - 1].clave, obs: '' };
+  } catch (e) {
+    CD7_DEVOLVER[fila.idTarea] = { estado: 'error', error: e.message };
+  }
+  cd7RenderLista();
+}
+
+function cd7HtmlDevolver(f) {
+  const d = CD7_DEVOLVER[f.idTarea];
+  if (!d) return '';
+  const caja = (contenido) => `<div class="cd7-dev-panel" data-id="${cd7Esc(f.idTarea)}" style="margin-top:8px; padding:8px; border:1px solid #fcd34d; background:#fffbeb; border-radius:6px; font-size:11.5px;">${contenido}</div>`;
+  if (d.estado === 'cargando') return caja('⏳ Consultando el flujo para ver a quién se puede devolver…');
+  if (d.estado === 'error') return caja(`<span style="color:#991b1b;">❌ ${cd7Esc(d.error)}</span> <button class="cd7-dev-cancelar" data-id="${cd7Esc(f.idTarea)}" style="margin-left:6px; padding:2px 8px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Cerrar</button>`);
+  return caja(`
+    <b style="color:#92400e;">↩️ Devolver a:</b>
+    ${d.opciones.map(o => `
+      <label style="display:flex; align-items:center; gap:6px; margin-top:5px; cursor:pointer;">
+        <input type="radio" name="cd7dev_${cd7Esc(f.idTarea)}" class="cd7-dev-opcion" data-id="${cd7Esc(f.idTarea)}" value="${cd7Esc(o.clave)}" ${d.eleccion === o.clave ? 'checked' : ''}>
+        <span>${o.etiqueta}: <b>${cd7Esc(o.nombre) || '—'}</b></span>
+      </label>`).join('')}
+    <textarea class="cd7-dev-obs" data-id="${cd7Esc(f.idTarea)}" rows="2" placeholder="Observación de la devolución (obligatoria)" style="width:100%; box-sizing:border-box; margin-top:6px; padding:5px; border:1px solid #d1d5db; border-radius:4px; font-size:11.5px; font-family:inherit; resize:vertical;">${cd7Esc(d.obs || '')}</textarea>
+    <div style="display:flex; gap:6px; margin-top:6px;">
+      <button class="cd7-dev-enviar" data-id="${cd7Esc(f.idTarea)}" style="padding:5px 11px; background:#b45309; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">↩️ Devolver ahora</button>
+      <button class="cd7-dev-cancelar" data-id="${cd7Esc(f.idTarea)}" style="padding:5px 11px; background:#e5e7eb; border:none; border-radius:5px; cursor:pointer; font-size:12px;">Cancelar</button>
+    </div>`);
+}
+
+function cd7Devolver(fila, destino, obs) {
+  // Sin fila de espera: arranca de inmediato (en paralelo con las demás).
+  CD7_FIRMA_PENDIENTES++;
+  cd7MarcarFase(fila, 'cola', '🕒 Iniciando devolución…');
+  return cd7DevolverAhora(fila, destino, obs).finally(() => { CD7_FIRMA_PENDIENTES--; });
+}
+
+async function cd7DevolverAhora(fila, destino, obs) {
+  let marco = null;
+  try {
+    cd7Aviso(`⏳ Tarea ${fila.idInicial}: preparando la devolución a ${cd7Esc(destino.nombre)}…`);
+    cd7MarcarFase(fila, 'proceso', '⏳ 1/3 · Preparando la devolución…');
+    const v = await cd2Post(TD_CONFIG.urlValidar, { IDTAREADOC: fila.idTarea });
+    if (!v || !v.RESPUESTA) throw new Error('ControlDoc indica que no se han radicado el/los traslado(s) de esta tarea');
+    try { await cdFetchPost(CD7_URL_LEIDO, { idtareadoc: fila.idTarea }); } catch (e) { /* no impide seguir */ }
+
+    cd7MarcarFase(fila, 'proceso', '⏳ 2/3 · Cargando el documento en segundo plano…');
+    marco = await cd7CrearControlDocOculto();
+    const W = marco.contentWindow, D = marco.contentDocument;
+    const ruta = (W.GLOBALES && W.GLOBALES.URL) || 'https://controldoc.minsalud.gov.co/Controldoc//';
+    const instruccion = fila.instruccion === 'APROBAR' || CD7_LISTA_ACTIVA === 'aprobar' ? 'APROBAR' : 'REVISAR';
+    W.jQuery('#page_content_inner').empty().load(ruta + 'TareasDoc/CrearDoc', {
+      TipoDocumento: cd7TipoDocCodigo(fila.tipoDoc), IdTareaInicial: fila.idInicial, IdTareaActual: fila.idTarea,
+      Editar: 'SI', INSTRUCCIONES: instruccion, IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
+    });
+
+    CD7_MOVS.push({ ts: Date.now(), estado: 'PREPARADO', idTarea: fila.idTarea, idInicial: fila.idInicial, asunto: fila.asunto, listaOrigen: CD7_LISTA_ACTIVA === 'aprobar' ? 'Por aprobar' : 'Por revisar', accion: 'DEVOLVER → REVISAR', destinatario: destino.nombre, idDestinatario: destino.id, comentario: obs, comentarioPreparado: obs, fechaPaso: '', login: CD7_SESION.login || '', detalle: `Devolución (${destino.clave === 'proyecto' ? 'a quien proyectó' : 'a quien la envió'}) desde el panel` });
+    cd7GuardarMovs();
+
+    await cd7EsperarA(() => typeof W.TDOC_GUARDARDOC === 'function' && typeof W.TDOC_SeleccionarAccion === 'function', CD7_ESPERA_EDITOR_MS, 'pantalla de la tarea');
+    await cd7EsperarA(() => {
+      const f = D.querySelector('#ControlDocCeroPapelPDF');
+      return f && f.getAttribute('name') === 'ECP_EditorCeroPapel' && f.contentDocument && f.contentDocument.readyState === 'complete' && f.contentWindow.ASPx;
+    }, CD7_ESPERA_EDITOR_MS, 'editor del documento');
+    await cd7Dormir(3000);
+
+    if (typeof W.ECP_EXL_VPDF_IDENTIFICAR === 'function' && W.ECP_EXL_VPDF_IDENTIFICAR() !== 'DOC') throw new Error('El editor no tiene seleccionada la última versión en formato DOC');
+
+    let mensajeControlDoc = '';
+    if (typeof W.CD_modal_alert === 'function') {
+      const original = W.CD_modal_alert;
+      W.CD_modal_alert = function (titulo, mensaje) { mensajeControlDoc = String(mensaje || titulo || '').replace(/<[^>]+>/g, ' '); return original.apply(this, arguments); };
+    }
+
+    // A quien te lo envió: ControlDoc valida que esa persona siga activa.
+    if (destino.clave === 'ultimo' && W.FunEmisorActivo === 'NO') throw new Error(`ControlDoc indica que ${destino.nombre} no se encuentra activo`);
+
+    // Estado que deja ControlDoc al aceptar "Devolver" (CrearDoc.js + CrearDocReady.js).
+    W.TDOC_ACCION = 'DEVOLVER';
+    W.ETDOC_INSTRUCCIONES = 'REVISAR'; W.ETDOC_REVISAR = true; W.ETDOC_FIRMAR = false;
+    W.ETDOC_OBSERVACIONES = obs; W.ETDOC_ENVIAR = true; W.ETDOC_PROCEDENCIA = 'FUNCIONARIOS';
+    W.TDOC_IDFUNCIONARIOTAREA = destino.id;
+    W.TDOC_NOMBREFUNCIONARIOTAREA = destino.nombre;
+    W.TDOC_TABLAFUNCIONARIO = 'FUNCIONARIOS';
+    W.TDOC_INSTRUCCIONES = 'REVISAR';
+    W.TDOC_OBSERVACIONES = obs;
+    W.TDOC_MOTIVODEVOLUCION = '';
+    W.TDOC_ENVIADO = true;
+
+    cd7Aviso(`⏳ Tarea ${fila.idInicial}: devolviendo a ${cd7Esc(destino.nombre)}…`);
+    cd7MarcarFase(fila, 'proceso', `⏳ 3/3 · Devolviendo a ${cd7Esc(destino.nombre)}…`);
+    W.TDOC_GUARDARDOC();   // misma rama que ejecuta ControlDoc al confirmar el resumen (no radica)
+
+    let cerro = true;
+    try {
+      await cd7EsperarA(() => { const d = marco.contentDocument; return !d || !d.querySelector('#ControlDocCeroPapelPDF'); }, 90000, 'cierre del editor');
+    } catch (e) { cerro = false; }
+    await cd7Dormir(1500);
+
+    // Confirmación real: la tarea ya no debe estar en ninguna de tus listas.
+    let salio = null;
+    try {
+      const id = CD7_SESION.id || CD7_CUENTA.idFuncionario;
+      const [rev, apr] = await Promise.all([cd7ConsultarLista('revisar', id), cd7ConsultarLista('aprobar', id)]);
+      salio = ![...rev, ...apr].some(f => String(f.idTarea) === String(fila.idTarea));
+    } catch (e) { salio = null; }
+
+    delete CD7_DEVOLVER[fila.idTarea];
+    if (salio === true) {
+      const ult = [...CD7_MOVS].reverse().find(m => m.estado === 'PREPARADO' && String(m.idInicial) === String(fila.idInicial) && m.accion === 'DEVOLVER → REVISAR');
+      if (ult) { ult.detalle = `Devuelta a ${destino.nombre}`; cd7GuardarMovs(); }
+      cd7Aviso(`↩️ Tarea ${fila.idInicial}: devuelta a <b>${cd7Esc(destino.nombre)}</b>.`, 'ok');
+      cd7MarcarFase(fila, 'devuelto', `↩️ Devuelta a ${cd7Esc(destino.nombre)}`);
+      setTimeout(() => { delete CD7_FASES[String(fila.idTarea)]; cd7CargarListas(); }, 2500);
+      return true;
+    } else {
+      cd7MarcarFase(fila, 'error', `⚠️ ${salio === false ? 'Sigue en tu bandeja' : 'Sin confirmar'} · revísala`);
+      cd7Aviso(`⚠️ Tarea ${fila.idInicial}: ${salio === false ? 'sigue en tu bandeja' : 'no se pudo confirmar si salió de tu bandeja'}${!cerro ? ' y ControlDoc no cerró el editor' : ''}.${mensajeControlDoc ? ` Mensaje de ControlDoc: ${cd7Esc(mensajeControlDoc.slice(0, 200))}` : ''} Revísala con 📝 Abrir documento.`, 'aviso');
+      return false;
+    }
+  } catch (e) {
+    cd7Aviso(`❌ Tarea ${fila.idInicial}: ${cd7Esc(e.message)}. No se devolvió.`, 'error');
+    cd7MarcarFase(fila, 'error', `❌ ${cd7Esc(e.message)} · no se devolvió`);
+    return false;
+  } finally {
+    if (marco) setTimeout(() => marco.remove(), 1000);
+  }
+}
+
 async function cd7CargarListas() {
   const estado = cd7Q('#PCD_SegEstado');
   if (!CD7_CUENTA) return;
@@ -4233,6 +4495,7 @@ function cd7ResumirPaso(p) {
     orden: Number(p.ORDEN) || 0, idTarea: p.IDTAREADOC,
     estadoTarea: String(p.ESTADOTAREA || '').toUpperCase(), instruccion: String(p.INSTRUCCION || '').toUpperCase(),
     de: p.FUNCIONARIOCREO || '', a: p.FUNCIONARIOTAREA || p.NOMBRESFUNCIONARIOTAREA || '',
+    idDe: Number(p.IDFUNCIONARIOCREO) || 0, idA: Number(p.IDFUNCIONARIOTAREA) || 0,
     fecha, fechaMs: cd7FechaMs(fecha) ?? (() => { const d = cd4ParsearFecha(p.FECHA); return d ? d.getTime() : null; })(),
     obs: String(p.OBSERVACIONES || ''), motivoDev: String(p.MOTIVODEVOLUCION || ''),
     estadoFirma: p.ESTADOFIRMA || '', tieneArchivo: !!p.NOMBREARCHIVO, nombreArchivo: p.NOMBREARCHIVO || '',
@@ -4399,6 +4662,7 @@ function cd7RenderLista() {
         <button class="cd7-btn-copiar" data-id="${cd7Esc(f.idTarea)}" data-campo="idTarea" title="Copiar el ID del paso actual (IDTAREADOC)" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Paso</button>
         ${Number(f.idc) > 0 ? `<button class="cd7-btn-copiar" data-id="${cd7Esc(f.idTarea)}" data-campo="idc" title="Copiar IDC" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 IDC</button>` : ''}
         <button class="cd7-btn-copiar" data-id="${cd7Esc(f.idTarea)}" data-campo="asunto" title="Copiar asunto" style="padding:3px 7px; font-size:11px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">📋 Asu</button>
+        ${puedePreparar ? `<label title="Marcar para la devolución masiva" style="display:inline-flex; align-items:center; gap:3px; padding:2px 7px; font-size:11px; background:#fef3c7; color:#92400e; border-radius:4px; cursor:pointer;"><input type="checkbox" class="cd7-sel-dev" data-id="${cd7Esc(f.idTarea)}" ${CD7_SEL_DEV.has(String(f.idTarea)) ? 'checked' : ''} style="margin:0;">↩️ Lote</label>` : ''}
       </div>
       <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:7px;">
         <button class="cd7-btn-traza" data-id="${cd7Esc(f.idTarea)}" style="padding:6px 11px; background:#ea580c; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📜 ${f.trazaAbierta ? 'Ocultar' : 'Trazabilidad'}</button>
@@ -4407,8 +4671,10 @@ function cd7RenderLista() {
         ${(() => { const e = cd4EstadoBotonAdjuntos(f); return `<button class="cd7-btn-adjuntos" data-id="${cd7Esc(f.idTarea)}" title="${cd7Esc(e.titulo)}" ${e.activo ? '' : 'disabled'} style="padding:6px 11px; background:${e.fondo}; color:${e.color}; border:none; border-radius:5px; cursor:${e.activo ? 'pointer' : 'not-allowed'}; font-size:12px; font-weight:600;">📎 ${e.texto}</button>`; })()}
         ${puedePreparar ? `<button class="cd7-btn-abrir-doc" data-id="${cd7Esc(f.idTarea)}" title="Abre esta tarea en el editor de ControlDoc (la misma pantalla de la bandeja)" style="padding:6px 11px; background:#0f766e; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📝 Abrir documento</button>` : ''}
         ${puedePreparar && (CD7_LISTA_ACTIVA === 'aprobar' || f.instruccion === 'APROBAR') ? `<button class="cd7-btn-aprobar-firma" data-id="${cd7Esc(f.idTarea)}" title="Un clic: aprueba y envía a la bandeja de firma en segundo plano (radica directo, sin abrir nada)" style="padding:6px 11px; background:#16a34a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">✍️ Aprobar para firma</button>` : ''}
+        ${puedePreparar ? `<button class="cd7-btn-devolver" data-id="${cd7Esc(f.idTarea)}" title="Devuelve la tarea a quien la proyectó o a quien te la envió (en segundo plano, sin abrir nada)" style="padding:6px 11px; background:#b45309; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">↩️ ${CD7_DEVOLVER[f.idTarea] ? 'Cerrar devolución' : 'Devolver'}</button>` : ''}
         ${puedePreparar ? `<button class="cd7-btn-preparar" data-id="${cd7Esc(f.idTarea)}" style="padding:6px 11px; background:#7c3aed; color:#fff; border:none; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">📤 Preparar envío</button>` : ''}
       </div>
+      ${puedePreparar ? cd7HtmlDevolver(f) : ''}
       ${f.trazaAbierta ? `<div style="margin-top:8px; padding:8px; background:#fafafa; border-radius:6px;">${cd7HtmlTraza(tz, f) || '<div style="color:#9ca3af; font-size:11px;">Pulsa de nuevo para cargar.</div>'}</div>` : ''}
     </div>`;
   }).join('');
@@ -4443,6 +4709,26 @@ function cd7RenderLista() {
   cont.querySelectorAll('.cd7-btn-abrir-doc').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7Ocupado(b, '⏳ Abriendo…', () => cd7AbrirDocumentoNativo(f, f.instruccion === 'APROBAR' || CD7_LISTA_ACTIVA === 'aprobar' ? 'APROBAR' : 'REVISAR')); }; });
   cont.querySelectorAll('.cd7-btn-aprobar-firma').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7Ocupado(b, '⏳ Aprobando…', () => cd7AprobarParaFirma(f)); }; });
   cont.querySelectorAll('.cd7-btn-preparar').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7AbrirPreparacion(f); }; });
+  cont.querySelectorAll('.cd7-sel-dev').forEach(c => {
+    c.onclick = (e) => e.stopPropagation();
+    c.onchange = () => { CD7_DEV_MASIVA_CONFIRMAR = false; if (c.checked) CD7_SEL_DEV.add(String(c.dataset.id)); else CD7_SEL_DEV.delete(String(c.dataset.id)); cd7RenderSelDev(); };
+  });
+  cd7RenderSelDev();
+  cont.querySelectorAll('.cd7-btn-devolver').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7AbrirDevolver(f); }; });
+  cont.querySelectorAll('.cd7-dev-opcion').forEach(r => { r.onchange = () => { const d = CD7_DEVOLVER[r.dataset.id]; if (d) d.eleccion = r.value; }; });
+  cont.querySelectorAll('.cd7-dev-obs').forEach(t => { t.oninput = () => { const d = CD7_DEVOLVER[t.dataset.id]; if (d) d.obs = t.value; }; });
+  cont.querySelectorAll('.cd7-dev-cancelar').forEach(b => { b.onclick = () => { delete CD7_DEVOLVER[b.dataset.id]; cd7RenderLista(); }; });
+  cont.querySelectorAll('.cd7-dev-enviar').forEach(b => { b.onclick = () => {
+    const f = porId(b.dataset.id); const d = CD7_DEVOLVER[b.dataset.id];
+    if (!f || !d || d.estado !== 'listo') return;
+    const obs = (d.obs || '').trim();
+    const destino = d.opciones.find(o => o.clave === d.eleccion);
+    if (!destino) { cd7Aviso('Elige a quién devolver la tarea.', 'aviso'); return; }
+    if (!obs) { cd7Aviso('Escribe la observación de la devolución.', 'aviso'); const t = cont.querySelector(`.cd7-dev-obs[data-id="${CSS.escape(b.dataset.id)}"]`); if (t) t.focus(); return; }
+    delete CD7_DEVOLVER[b.dataset.id];
+    cd7RenderLista();
+    cd7Devolver(f, destino, obs);
+  }; });
   cont.querySelectorAll('.cd7-paso-pdf').forEach(b => { b.onclick = () => cd7Ocupado(b, '⏳', () => b.dataset.modo === 'ver' ? cd7AbrirPdf(b.dataset.archivo) : cd7BajarPdf(b.dataset.archivo, b.dataset.nombre)); });
 
   if (estado && !CD7_ERRORES[CD7_LISTA_ACTIVA]) {
@@ -4776,6 +5062,15 @@ function cd7Cablear() {
   document.querySelectorAll('.cd7-modo-btn').forEach(b => { b.onclick = () => { CD7_MODO_BUSQUEDA = b.dataset.modo; cd7PintarModo(); }; });
   cd7Q('#PCD_SegBuscarBtn').onclick = cd7Buscar;
   cd7Q('#PCD_SegBuscarTexto').addEventListener('keydown', (e) => { if (e.key === 'Enter') cd7Buscar(); });
+  document.querySelectorAll('.cd7-dev-sel').forEach(b => { b.onclick = () => {
+    if (b.dataset.modo === 'primeros') {
+      const n = Number(cd7Q('#PCD_SegDevSelN').value);
+      if (!n || n < 1) { cd7Q('#PCD_SegDevSelN').focus(); return; }
+      cd7SeleccionarDev('primeros', n);
+    } else cd7SeleccionarDev(b.dataset.modo);
+  }; });
+  cd7Q('#PCD_SegDevMasivaBtn').onclick = cd7DevolverMasivo;
+  cd7Q('#PCD_SegDevMasivaDestino').onchange = () => { CD7_DEV_MASIVA_CONFIRMAR = false; cd7RenderSelDev(); cd7Q('#PCD_SegDevMasivaEstado').textContent = ''; };
   cd7PintarModo(); cd7Render();
 }
 
@@ -5075,6 +5370,26 @@ function cd3CrearPanel() {
         <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px; font-size:11px; color:#6b7280;">
           <label for="PCD_SegObsFirma">✍️ Observación al aprobar para firma:</label>
           <input id="PCD_SegObsFirma" type="text" value="VB" style="flex:1; max-width:260px; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+        </div>
+        <div id="PCD_SegDevMasiva" style="padding:7px 8px; margin-bottom:8px; background:#fffbeb; border:1px solid #fcd34d; border-radius:6px; font-size:11px;">
+          <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+            <b style="color:#92400e;">↩️ Devolución masiva</b>
+            <span style="color:#6b7280;">· marcar:</span>
+            <button class="cd7-dev-sel" data-modo="visibles" style="padding:3px 8px; background:#fde68a; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Todas las visibles</button>
+            <input id="PCD_SegDevSelN" type="number" min="1" placeholder="#" style="width:48px; padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <button class="cd7-dev-sel" data-modo="primeros" style="padding:3px 8px; background:#fde68a; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Primeras #</button>
+            <button class="cd7-dev-sel" data-modo="ninguna" style="padding:3px 8px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">Ninguna</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-top:5px;">
+            <select id="PCD_SegDevMasivaDestino" style="padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+              <option value="ultimo">📨 A quien me la envió</option>
+              <option value="proyecto">✏️ A quien la proyectó</option>
+            </select>
+            <input id="PCD_SegDevMasivaObs" type="text" placeholder="Observación de la devolución (obligatoria)" style="flex:1; min-width:150px; padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+            <label title="Cuántas devoluciones se ejecutan al mismo tiempo (cada una abre su propia copia oculta de ControlDoc)" style="display:inline-flex; align-items:center; gap:3px; color:#6b7280;">⚡ Simultáneas <input id="PCD_SegDevSimultaneas" type="number" min="1" max="30" value="5" style="width:44px; padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;"></label>
+            <button id="PCD_SegDevMasivaBtn" style="padding:4px 10px; background:#b45309; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">↩️ Devolver seleccionadas (0)</button>
+          </div>
+          <div id="PCD_SegDevMasivaEstado" style="margin-top:4px; min-height:13px;"></div>
         </div>
         <div id="PCD_SegEstado" style="font-size:11px; color:#6b7280; margin-bottom:2px;">Abre esta pestaña para cargar tus tareas.</div>
         <div id="PCD_SegProgreso" style="font-size:11px; color:#ea580c; font-weight:bold; margin-bottom:6px; min-height:14px;"></div>
