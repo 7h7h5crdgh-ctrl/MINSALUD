@@ -838,6 +838,18 @@ function cdCrearBurbujaMinimizada({ contenedor, emoji, colorFondo, id, alRestaur
   burbuja.style.cssText = `position:fixed; top:${Math.max(rect.top, 0)}px; left:${Math.max(rect.left, 0)}px; width:48px; height:48px; border-radius:50%; background:${colorFondo}; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; box-shadow:0 4px 14px rgba(0,0,0,0.35); cursor:grab; z-index:100000; user-select:none;`;
   burbuja.textContent = emoji;
   document.body.appendChild(burbuja);
+  // Si hay otra burbuja en la misma zona, esta baja hasta quedar libre (la de Seguimiento de Documento parte 60 px más abajo).
+  if (id === 'PSD_Burbuja') burbuja.style.top = (parseFloat(burbuja.style.top) || 0) + 60 + 'px';
+  for (let i = 0; i < 12; i++) {
+    const a = burbuja.getBoundingClientRect();
+    const choca = [...document.querySelectorAll('[id$="_Burbuja"]')].some(o => {
+      if (o === burbuja) return false;
+      const b = o.getBoundingClientRect();
+      return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    });
+    if (!choca) break;
+    burbuja.style.top = (parseFloat(burbuja.style.top) || 0) + 56 + 'px';
+  }
 
   let arrastrando = false, offsetX = 0, offsetY = 0, movioBastante = false, startX = 0, startY = 0;
 
@@ -3065,12 +3077,14 @@ function cd4RenderizarTabla() {
               <button data-i="${i}" data-copiar="idTarea" class="cd4-btn-copiar" title="Copiar ID Tarea" style="${btn} background:#e5e7eb; cursor:pointer;">📋T</button>
               <button data-i="${i}" data-copiar="idc" class="cd4-btn-copiar" title="${f.conIdc ? 'Copiar IDC' : 'Sin IDC'}" style="${btn} background:#e5e7eb; ${f.conIdc ? 'cursor:pointer;' : 'cursor:not-allowed; opacity:0.4;'}" ${f.conIdc ? '' : 'disabled'}>📋C</button>
               <button data-i="${i}" data-copiar="asunto" class="cd4-btn-copiar" title="Copiar Asunto" style="${btn} grid-column:1 / -1; background:#e5e7eb; cursor:pointer;">📋A</button>
+              <button data-tarea="${e(f.idPaso ?? f.idTarea)}" class="cd4-btn-flujo" title="Ver el flujo completo de esta tarea (todas las versiones)" style="${btn} grid-column:1 / -1; background:#fef3c7; color:#92400e; cursor:pointer;">🧾 Flujo</button>
             </div>
           </td>
         </tr>`; }).join('')}</tbody>
     </table>`;
 
   cont.querySelectorAll('.cd4-btn-adjuntos').forEach(b => { b.onclick = () => cd4MostrarAdjuntos(CD4_FILAS[Number(b.dataset.i)].idTarea); });
+  cont.querySelectorAll('.cd4-btn-flujo').forEach(b => { b.onclick = (ev) => { ev.stopPropagation(); cd4VerFlujo(b.dataset.tarea); }; });
   cont.querySelectorAll('tr.cd4-fila').forEach(tr => {
     tr.addEventListener('click', () => { CD4_SELECCIONADA = tr.dataset.clave; cd4AplicarSeleccion(); });
   });
@@ -3551,19 +3565,53 @@ async function cd6ObtenerUltimaVersion(idTarea) {
   // Toma el paso más reciente que sí tenga PDF (el último paso puede no tenerlo).
   const conPdf = [...ordenado].reverse().find(p => p.NOMBREARCHIVO);
   if (!conPdf) throw new Error('Ningún paso del flujo tiene PDF');
-  return { paso: conPdf, totalPasos: ordenado.length, asunto: ultimo.ASUNTO || '' };
+  const idInicial = (ordenado.find(p => Number(p.IDTAREAINICIAL) > 0) || {}).IDTAREAINICIAL || '';
+  return { paso: conPdf, totalPasos: ordenado.length, asunto: ultimo.ASUNTO || '', idInicial };
+}
+
+// Busca los adjuntos vigentes del ID TAREA y los descarga a r.adjuntos [{ nombre, bytes }].
+// Un adjunto que falle no cancela la tarea: se anota en r.adjError y el PDF se entrega igual.
+async function cd6TraerAdjuntos(r, ids) {
+  let lista = [], huboError = false;
+  for (const id of ids) {
+    try { lista = await cd4ObtenerAdjuntos(id); if (lista.length) break; } catch (e) { huboError = true; }
+  }
+  if (!lista.length) { if (huboError) r.adjError = 'No se pudo consultar los adjuntos'; return; }
+  const usados = new Set(), fallidos = [];
+  for (const a of lista) {
+    try {
+      const blob = await cd4ObtenerAdjuntoBlob(a);
+      if (!blob) throw new Error('sin archivo');
+      let n = (cd4NombreAdjunto(a) || 'adjunto').replace(/[\\/:*?"<>|]+/g, '_'), k = 2;
+      const punto = n.lastIndexOf('.'), base = punto > 0 ? n.slice(0, punto) : n, ext = punto > 0 ? n.slice(punto) : '';
+      while (usados.has(n.toLowerCase())) n = `${base} (${k++})${ext}`;
+      usados.add(n.toLowerCase());
+      r.adjuntos.push({ nombre: n, bytes: new Uint8Array(await blob.arrayBuffer()) });
+    } catch (e) { fallidos.push(cd4NombreAdjunto(a) || '?'); }
+  }
+  if (fallidos.length) r.adjError = `${fallidos.length} adjunto(s) no se pudieron descargar: ${fallidos.join(', ')}`;
+}
+
+// Un ID con adjuntos → ZIP "Tarea_<id>.zip" (PDF + adjuntos). Sin adjuntos → solo el PDF.
+async function cd6ArchivoDeTarea(r) {
+  if (!r.adjuntos || !r.adjuntos.length) return { nombre: r.nombre, bytes: r.bytes, esZip: false };
+  const blob = cd4CrearZip([{ nombre: r.nombre, bytes: r.bytes }, ...r.adjuntos]);
+  return { nombre: `Tarea_${r.id}.zip`, bytes: new Uint8Array(await blob.arrayBuffer()), esZip: true };
 }
 
 async function cd6ProcesarTarea(r) {
   r.estado = 'procesando'; r.error = ''; cd6PintarTabla();
   try {
-    const { paso, totalPasos, asunto } = await cd6ObtenerUltimaVersion(r.id);
+    const { paso, totalPasos, asunto, idInicial } = await cd6ObtenerUltimaVersion(r.id);
     r.orden = paso.ORDEN; r.totalPasos = totalPasos; r.asunto = asunto;
+    r.adjuntos = []; r.adjError = '';
     const blobUrl = await tdObtenerPdfBlobUrl(paso.NOMBREARCHIVO);
     if (!blobUrl) throw new Error('El servidor no devolvió el PDF de esa versión');
     r.bytes = new Uint8Array(await (await fetch(blobUrl)).arrayBuffer());
     URL.revokeObjectURL(blobUrl);
     r.nombre = `Tarea_${r.id}_v${paso.ORDEN}.pdf`;
+    // Adjuntos (opcional): cuelgan del ID TAREA; si ahí no hay, se prueba el ID pegado y el del paso.
+    if (document.querySelector('#PCD_TdmAdjuntos')?.checked) await cd6TraerAdjuntos(r, [...new Set([idInicial, r.id, paso.IDTAREADOC].filter(Boolean).map(String))]);
     r.estado = 'ok';
   } catch (e) {
     r.estado = 'error'; r.error = e.message; r.bytes = null;
@@ -3590,12 +3638,14 @@ async function cd6Entregar(modo) {
   if (!listos.length) return;
   if (modo === 'zip' && listos.length > 1) {
     cd6Estado('⏳ Armando el ZIP…');
-    const archivos = listos.map(r => ({ nombre: r.nombre, bytes: r.bytes }));
+    const archivos = [];
+    for (const r of listos) { const a = await cd6ArchivoDeTarea(r); archivos.push({ nombre: a.nombre, bytes: a.bytes }); }
     const f = new Date(), p = n => String(n).padStart(2, '0');
-    cd4DescargarBlob(cd4CrearZip(archivos), `UltimasVersiones_Tareas_${f.getFullYear()}${p(f.getMonth() + 1)}${p(f.getDate())}_${p(f.getHours())}${p(f.getMinutes())}.zip`);
+    cd4DescargarBlob(cd4CrearZip(archivos), `Tareas_UltimaVersion_${f.getFullYear()}${p(f.getMonth() + 1)}${p(f.getDate())}_${p(f.getHours())}${p(f.getMinutes())}.zip`);
   } else {
     for (const r of listos) {
-      cd4DescargarBlob(new Blob([r.bytes], { type: 'application/pdf' }), r.nombre);
+      const a = await cd6ArchivoDeTarea(r);
+      cd4DescargarBlob(new Blob([a.bytes], { type: a.esZip ? 'application/zip' : 'application/pdf' }), a.nombre);
       await new Promise(res => setTimeout(res, 500));
     }
   }
@@ -3631,15 +3681,17 @@ async function cd6Ejecutar(soloFallidos = false) {
 
   const ok = CD6_RESULTADOS.filter(r => r.estado === 'ok').length;
   const err = CD6_RESULTADOS.filter(r => r.estado === 'error').length;
-  cd6Estado(`🏁 ${ok} descargado(s) · ${err} con error${err ? ' (usa "Reintentar fallidos" o revisa la consola)' : ''}.`);
+  const conAdj = CD6_RESULTADOS.filter(r => r.adjuntos && r.adjuntos.length).length;
+  const advAdj = CD6_RESULTADOS.filter(r => r.adjError).length;
+  cd6Estado(`🏁 ${ok} descargado(s) (${conAdj} con adjuntos en ZIP propio) · ${err} con error${err ? ' (usa "Reintentar fallidos" o revisa la consola)' : ''}${advAdj ? ` · ⚠️ ${advAdj} con problemas en adjuntos (ver tabla)` : ''}.`);
   CD6_EN_CURSO = false; cd6Botones(true);
 }
 
 function cd6ExportarExcel() {
   if (!CD6_RESULTADOS.length) return cd6Estado('Aún no hay resultados para exportar.');
   const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const filas = CD6_RESULTADOS.map(r => `<tr><td>${esc(r.id)}</td><td>${r.estado === 'ok' ? 'OK' : 'ERROR'}</td><td>${esc(r.orden)}</td><td>${esc(r.totalPasos)}</td><td>${esc(r.nombre)}</td><td>${esc(r.asunto)}</td><td>${esc(r.error)}</td></tr>`).join('');
-  const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>IDTAREADOC</th><th>Resultado</th><th>Versión descargada</th><th>Pasos del flujo</th><th>Archivo</th><th>Asunto</th><th>Error</th></tr>${filas}</table></body></html>`;
+  const filas = CD6_RESULTADOS.map(r => `<tr><td>${esc(r.id)}</td><td>${r.estado === 'ok' ? 'OK' : 'ERROR'}</td><td>${esc(r.orden)}</td><td>${esc(r.totalPasos)}</td><td>${esc(r.nombre)}</td><td>${esc(r.adjuntos ? r.adjuntos.length : 0)}</td><td>${esc(r.asunto)}</td><td>${esc(r.error || r.adjError)}</td></tr>`).join('');
+  const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>IDTAREADOC</th><th>Resultado</th><th>Versión descargada</th><th>Pasos del flujo</th><th>Archivo</th><th>Adjuntos</th><th>Asunto</th><th>Error</th></tr>${filas}</table></body></html>`;
   cd4DescargarBlob(new Blob([html], { type: 'application/vnd.ms-excel' }), `Descarga_UltimasVersiones_${new Date().toISOString().slice(0, 10)}.xls`);
 }
 
@@ -3658,8 +3710,8 @@ function cd6PintarTabla() {
         <tr style="border-bottom:1px solid #f3f4f6; ${r.estado === 'error' ? 'background:#fff7f7;' : ''}">
           <td style="padding:4px;">${icono[r.estado]}</td>
           <td style="padding:4px; font-weight:bold;">${esc(r.id)}</td>
-          <td style="padding:4px;">${r.orden ? `v${esc(r.orden)} de ${esc(r.totalPasos)}` : '—'}</td>
-          <td style="padding:4px; word-break:break-word;">${r.estado === 'error' ? `<span style="color:#dc2626;">${esc(r.error)}</span>` : esc(r.asunto).slice(0, 90)}</td>
+          <td style="padding:4px;">${r.orden ? `v${esc(r.orden)} de ${esc(r.totalPasos)}` : '—'}${r.estado === 'ok' && r.adjuntos && r.adjuntos.length ? `<br><span style="color:#2563eb;">📎 ${r.adjuntos.length}</span>` : ''}</td>
+          <td style="padding:4px; word-break:break-word;">${r.estado === 'error' ? `<span style="color:#dc2626;">${esc(r.error)}</span>` : esc(r.asunto).slice(0, 90)}${r.adjError ? `<div style="color:#b45309; font-size:10px;">⚠️ ${esc(r.adjError)}</div>` : ''}</td>
           <td style="padding:4px;">${r.estado === 'ok' ? `<button class="cd6-ver" data-i="${i}" title="Previsualizar" style="border:none; background:none; cursor:pointer;">👁</button>` : ''}</td>
         </tr>`).join('')}</tbody>
     </table>`;
@@ -3982,6 +4034,13 @@ function cd7RegistrarAprobado(fila, radicado) {
   cd7GuardarAprobados();
 }
 
+// IdControl = IDDOCUMENTO del documento ya radicado (el mismo "IDC" del resto del panel).
+function cd7IdControlDePasos(pasos) {
+  const conId = [...pasos].reverse().find(p => p.idDocumento > 0);
+  const conRad = [...pasos].reverse().find(p => p.radicadoPaso);
+  return { idControl: conId ? String(conId.idDocumento) : '', radicado: conRad ? conRad.radicadoPaso : '' };
+}
+
 function cd7EsFirmado(pasos) {
   const firmado = (p) => { const e = String(p.estadoFirma || '').toUpperCase(); return e.includes('FIRMADO') && !e.includes('NO FIRMADO') && !e.includes('SIN FIRMA'); };
   return pasos.find(p => (p.instruccion === 'FIRMAR' && firmado(p)) || p.estadoTarea === 'FIRMADO') || null;
@@ -4001,10 +4060,18 @@ async function cd7RevisarFirmas(manual = false) {
       const ultimo = pasos[pasos.length - 1];
       a.revisadoTs = Date.now();
       if (ultimo) a.firmante = ultimo.a || a.firmante;
-      if (paso) { a.fase = 'firmado'; a.firmadoTs = paso.fechaMs || Date.now(); a.firmante = paso.a || paso.de || a.firmante; nuevosFirmados++; }
+      const ic = cd7IdControlDePasos(pasos);
+      if (ic.idControl) a.idControl = ic.idControl;
+      if (ic.radicado) a.radicado = ic.radicado;
+      if (paso) {
+        a.fase = 'firmado'; a.firmadoTs = paso.fechaMs || Date.now(); a.firmante = paso.a || paso.de || a.firmante; nuevosFirmados++;
+        // Bitácora: el IdControl y el radicado con los que quedó registrado oficialmente.
+        CD7_MOVS.push({ ts: Date.now(), estado: 'FIRMADO', idTarea: a.idTarea, idInicial: a.idInicial, asunto: a.asunto, listaOrigen: 'Aprobados para firma', accion: 'FIRMADO', destinatario: a.firmante || '', idDestinatario: '', comentario: '', comentarioPreparado: '', fechaPaso: paso.fecha || '', login: CD7_SESION.login || '', detalle: ic.idControl ? '' : 'No se encontró el IdControl en el flujo (revísalo en ControlDoc)', idControl: a.idControl || '', radicado: a.radicado || '' });
+      }
     } catch (e) { a.revisadoTs = Date.now(); }
   }, () => {});
   CD7_REVISANDO_FIRMAS = false;
+  cd7GuardarMovs();
   cd7LsEscribir(CD7_LS_APROBADOS, CD7_APROBADOS);
   cd7RenderAprobados(nuevosFirmados ? `✍️ ${nuevosFirmados} documento(s) recién firmado(s).` : '');
   if (nuevosFirmados) cd7Aviso(`✍️ ${nuevosFirmados} documento(s) aprobado(s) ya quedaron <b>firmados</b>.`, 'ok');
@@ -4037,7 +4104,7 @@ function cd7RenderAprobados(nota = '') {
       ${lista.map(a => `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; padding:4px 6px; margin-top:3px; border-radius:5px; font-size:10.5px; background:${a.fase === 'firmado' ? '#dcfce7' : '#fefce8'};">
           <div style="min-width:0;">
-            <b>Tarea ${cd7Esc(a.idInicial)}</b>${a.radicado ? ` · Rad. <span class="cd7-copiar-rad" data-rad="${cd7Esc(a.radicado)}" title="Clic para copiar" style="cursor:copy; text-decoration:underline dotted;">${cd7Esc(a.radicado)}</span>` : ''}
+            <b>Tarea ${cd7Esc(a.idInicial)}</b>${a.idControl ? ` · IdControl <span class="cd7-copiar-rad" data-rad="${cd7Esc(a.idControl)}" title="Clic para copiar el IdControl" style="cursor:copy; font-weight:bold; text-decoration:underline dotted;">${cd7Esc(a.idControl)}</span>` : ''}${a.radicado ? ` · Rad. <span class="cd7-copiar-rad" data-rad="${cd7Esc(a.radicado)}" title="Clic para copiar" style="cursor:copy; text-decoration:underline dotted;">${cd7Esc(a.radicado)}</span>` : ''}
             <div style="color:#6b7280; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${cd7Esc(a.asunto)}</div>
           </div>
           <span style="white-space:nowrap; font-weight:bold; color:${a.fase === 'firmado' ? '#166534' : '#92400e'};">${a.fase === 'firmado' ? `🟢 Firmado ${fecha(a.firmadoTs)}` : `🟡 Pendiente de firma`}</span>
@@ -4503,6 +4570,7 @@ function cd7ResumirPaso(p) {
   const fecha = cd4ExtraerCreacion(p);
   return {
     orden: Number(p.ORDEN) || 0, idTarea: p.IDTAREADOC,
+    idDocumento: Number(p.IDDOCUMENTO) || 0, radicadoPaso: String(p.RADICADO || '').trim(),
     estadoTarea: String(p.ESTADOTAREA || '').toUpperCase(), instruccion: String(p.INSTRUCCION || '').toUpperCase(),
     de: p.FUNCIONARIOCREO || '', a: p.FUNCIONARIOTAREA || p.NOMBRESFUNCIONARIOTAREA || '',
     idDe: Number(p.IDFUNCIONARIOCREO) || 0, idA: Number(p.IDFUNCIONARIOTAREA) || 0,
@@ -4589,10 +4657,151 @@ async function cd7TrazaTodas() {
 }
 
 // ── Vista ──
+// ── Filtro por letras (IDC, radicado, asunto, ID de tarea, persona…) ──
+// Ignora tildes y mayúsculas. Varias palabras: deben aparecer todas ("contrato 1037").
+// Una lista de IDs separados por coma o espacio muestra las que coincidan con cualquiera.
+function cd7ConsultaFiltro() {
+  const crudo = (cd7Q('#PCD_SegFiltro')?.value || '').trim();
+  if (!crudo) return { vacia: true, palabras: [], grupos: [] };
+  const norm = cd3Normalizar(crudo);
+  const palabras = norm.split(/[\s,;]+/).filter(Boolean);
+  let grupos;
+  if (palabras.length > 1 && palabras.every(p => /^\d{5,}$/.test(p))) grupos = palabras.map(p => [p]);   // lista de IDs: cualquiera
+  else if (/[,;]/.test(norm)) grupos = norm.split(/[,;]+/).map(g => g.split(/\s+/).filter(Boolean)).filter(g => g.length);
+  else grupos = [palabras];
+  return { vacia: false, palabras: [...new Set(grupos.flat())], grupos };
+}
+function cd7TextoBusqueda(f) {
+  return cd3Normalizar([f.idTarea, f.idInicial, Number(f.idc) > 0 ? f.idc : '', f.radicado, f.asunto, f.de, f.instruccion, f.obs, (cd7BuscarPrecarga(f) || {}).accion, (cd7BuscarPrecarga(f) || {}).resumen].join(' '));
+}
+function cd7Coincide(f, consulta) {
+  if (consulta.vacia) return true;
+  const h = cd7TextoBusqueda(f);
+  return consulta.grupos.some(g => g.every(p => h.includes(p)));
+}
+// Texto escapado con las coincidencias marcadas en amarillo (sin importar tildes ni mayúsculas).
+function cd7Resaltar(texto, palabras) {
+  const s = String(texto == null ? '' : texto);
+  if (!palabras || !palabras.length) return cd7Esc(s);
+  let norm = ''; const mapa = [];
+  for (let i = 0; i < s.length; i++) { const c = cd3Normalizar(s[i]); for (let k = 0; k < c.length; k++) { norm += c[k]; mapa.push(i); } }
+  const marcado = new Array(s.length).fill(false);
+  for (const p of palabras) {
+    if (!p) continue;
+    let ix = norm.indexOf(p);
+    while (ix !== -1) { for (let k = ix; k < ix + p.length; k++) marcado[mapa[k]] = true; ix = norm.indexOf(p, ix + 1); }
+  }
+  let out = '', abierto = false;
+  for (let i = 0; i < s.length; i++) {
+    if (marcado[i] && !abierto) { out += '<mark style="background:#fde047; color:inherit; padding:0 1px; border-radius:2px;">'; abierto = true; }
+    if (!marcado[i] && abierto) { out += '</mark>'; abierto = false; }
+    out += cd7Esc(s[i]);
+  }
+  return out + (abierto ? '</mark>' : '');
+}
+// "12 de 40 coinciden" + botón ✕; si aquí no hay nada pero la otra lista sí, lo avisa y deja saltar a ella.
+function cd7ActualizarInfoFiltro(total, visibles, consulta) {
+  const info = cd7Q('#PCD_SegFiltroInfo'), limpiar = cd7Q('#PCD_SegFiltroLimpiar');
+  if (limpiar) limpiar.style.display = consulta.vacia ? 'none' : 'block';
+  if (!info) return;
+  if (consulta.vacia) { info.innerHTML = ''; return; }
+  let extra = '';
+  if (!visibles) {
+    const otra = CD7_LISTA_ACTIVA === 'revisar' ? 'aprobar' : 'revisar';
+    const n = (CD7_DATOS[otra] || []).filter(f => cd7Coincide(f, consulta)).length;
+    if (n) extra = ` · <a href="#" class="cd7-ir-otra" data-lista="${otra}" style="color:#ea580c; font-weight:bold;">hay ${n} en "${otra === 'revisar' ? 'Por revisar' : 'Por aprobar'}" →</a>`;
+  }
+  info.innerHTML = `🔎 <b>${visibles}</b> de ${total} coinciden${consulta.grupos.length > 1 && consulta.grupos.every(g => g.length === 1) ? ' (lista de IDs: se muestra cualquiera de ellos)' : ''}${extra}.`;
+  info.querySelectorAll('.cd7-ir-otra').forEach(a => { a.onclick = (e) => { e.preventDefault(); CD7_LISTA_ACTIVA = a.dataset.lista; cd7Render(); }; });
+}
+
+// ── 📥 Precarga de la tabla de IA en las tarjetas de Seguimiento ──
+// Pegas la tabla (IDT · Asunto · Acción · Resumen; Markdown o copiada del chat con tabuladores)
+// y cada tarjeta cuyo ID TAREA coincida muestra la acción y el resumen. No consulta ni modifica nada en ControlDoc.
+const CD7_PRECARGA = new Map();     // idT (texto) → { idt, asunto, accion, resumen }
+const CD7_PRECARGA_LS = 'CD7_PRECARGA_IA';
+
+function cd7ParsearPrecarga(texto) {
+  const t = String(texto || '').trim();
+  if (!t) return [];
+  const limpiar = (s) => String(s ?? '').replace(/\*\*/g, '').trim();
+  if (t.startsWith('[') || t.startsWith('{')) {
+    let datos = JSON.parse(t); if (!Array.isArray(datos)) datos = [datos];
+    return datos.map(o => ({ idt: String(o.idt ?? o.IDT ?? o.idtarea ?? o.idTarea ?? '').replace(/\D/g, ''), firma: limpiar(o.firma ?? o.Firma), asunto: limpiar(o.asunto ?? o.Asunto), accion: limpiar(o.accion ?? o.acción ?? o.Acción ?? o.Accion), resumen: limpiar(o.resumen ?? o.Resumen) })).filter(f => f.idt);
+  }
+  const filas = [];
+  for (const linea of t.split(/\r?\n/)) {
+    let celdas;
+    if (linea.includes('\t')) celdas = linea.split('\t');
+    else if (linea.includes('|')) celdas = linea.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|');
+    else continue;
+    celdas = celdas.map(limpiar);
+    if (celdas.every(c => c === '' || /^:?-{2,}:?$/.test(c))) continue;   // separador de Markdown
+    const idt = (celdas[0] || '').replace(/\D/g, '');
+    if (!idt) continue;                                                  // encabezado
+    // Con columna Firma (🟢/🔴): IDT | Firma | Asunto | Acción | Resumen. Sin ella: IDT | Asunto | Acción | Resumen.
+    const conFirma = /[🟢🔴]/u.test(celdas[1] || '') || (celdas.length >= 5 && /^(🟢|🔴|SI|NO|SÍ)?$/i.test(celdas[1] || '') && (celdas[1] || '').length <= 3);
+    const o = conFirma ? 2 : 1;
+    filas.push({ idt, firma: conFirma ? celdas[1] : '', asunto: celdas[o] || '', accion: celdas[o + 1] || '', resumen: celdas.slice(o + 2).join(' | ') });
+  }
+  return filas;
+}
+
+function cd7BuscarPrecarga(f) {
+  return CD7_PRECARGA.get(String(f.idInicial)) || CD7_PRECARGA.get(String(f.idTarea)) || (Number(f.idc) > 0 ? CD7_PRECARGA.get(String(f.idc)) : null) || null;
+}
+
+function cd7ColorAccion(accion) {
+  const a = cd3Normalizar(accion);
+  if (/DEVOL|RECHAZ|NO APROB/.test(a)) return { fondo: '#fee2e2', color: '#991b1b' };
+  if (/APROB|FIRMA|ENVIAR|RADIC/.test(a)) return { fondo: '#dcfce7', color: '#166534' };
+  if (/REVIS|AJUST|CORREG|COMPLET/.test(a)) return { fondo: '#fef3c7', color: '#92400e' };
+  return { fondo: '#e0e7ff', color: '#3730a3' };
+}
+
+function cd7HtmlPrecarga(f, hl) {
+  const x = cd7BuscarPrecarga(f); if (!x) return '';
+  const c = cd7ColorAccion(x.accion);
+  return `<div class="cd7-precarga" style="margin-top:5px; padding:5px 8px; background:#f5f3ff; border-left:3px solid #7c3aed; border-radius:4px; font-size:11px; color:#312e81; line-height:1.4;">
+    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><b style="font-size:10px; color:#6d28d9;">🤖 IA</b>${x.firma ? `<span title="${/🟢/u.test(x.firma) ? 'Tiene el marcador de firma F1RM4NT3' : 'Falta el marcador de firma F1RM4NT3'}" style="font-size:12px;">${cd7Esc(x.firma)}</span>` : ''}${x.accion ? `<span style="padding:1px 8px; border-radius:10px; background:${c.fondo}; color:${c.color}; font-weight:bold; font-size:10px;">${cd7Esc(x.accion)}</span>` : ''}</div>
+    ${x.resumen ? `<div style="margin-top:2px; word-break:break-word;">${cd7Resaltar(x.resumen, hl || [])}</div>` : ''}
+    <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">
+      ${x.accion ? `<button class="cd7-copiar-ia" data-id="${cd7Esc(f.idTarea)}" data-campo="accion" title="Copiar la acción / observación sugerida" style="padding:2px 7px; font-size:10px; background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd; border-radius:4px; cursor:pointer;">📋 Acción</button>` : ''}
+      ${x.resumen ? `<button class="cd7-copiar-ia" data-id="${cd7Esc(f.idTarea)}" data-campo="resumen" title="Copiar el resumen" style="padding:2px 7px; font-size:10px; background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd; border-radius:4px; cursor:pointer;">📋 Resumen</button>` : ''}
+      ${x.accion && x.resumen ? `<button class="cd7-copiar-ia" data-id="${cd7Esc(f.idTarea)}" data-campo="ambos" title="Copiar acción y resumen" style="padding:2px 7px; font-size:10px; background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd; border-radius:4px; cursor:pointer;">📋 Ambos</button>` : ''}
+    </div></div>`;
+}
+
+function cd7GuardarPrecarga() {
+  try { localStorage.setItem(CD7_PRECARGA_LS, JSON.stringify([...CD7_PRECARGA.values()])); } catch (e) { /* sin almacenamiento */ }
+}
+function cd7RestaurarPrecarga() {
+  try { (JSON.parse(localStorage.getItem(CD7_PRECARGA_LS) || '[]') || []).forEach(x => x && x.idt && CD7_PRECARGA.set(String(x.idt), x)); } catch (e) { /* ignorar */ }
+}
+
+function cd7CargarPrecarga() {
+  const est = cd7Q('#PCD_SegPrecargaEstado');
+  let filas;
+  try { filas = cd7ParsearPrecarga(cd7Q('#PCD_SegPrecargaTexto').value); } catch (e) { est.textContent = '❌ No se pudo leer la tabla: ' + e.message; return; }
+  if (!filas.length) { est.textContent = '❌ No encontré filas. Copia la tabla con columnas IDT, Asunto, Acción y Resumen.'; return; }
+  filas.forEach(x => CD7_PRECARGA.set(String(x.idt), x));
+  cd7GuardarPrecarga();
+  const todas = [...(CD7_DATOS.revisar || []), ...(CD7_DATOS.aprobar || [])];
+  const sin = filas.filter(x => !todas.some(f => cd7BuscarPrecarga(f) === CD7_PRECARGA.get(String(x.idt)))).map(x => x.idt);
+  est.innerHTML = `✅ ${filas.length} fila(s) cargada(s) · ${filas.length - sin.length} coinciden con tareas de tus listas` + (sin.length ? ` · <span style="color:#b45309;" title="${cd7Esc(sin.join(', '))}">${sin.length} sin tarea en la lista (${cd7Esc(sin.slice(0, 6).join(', '))}${sin.length > 6 ? '…' : ''})</span>` : '') + '.';
+  cd7RenderLista();
+}
+
+function cd7LimpiarPrecarga() {
+  CD7_PRECARGA.clear(); cd7GuardarPrecarga();
+  cd7Q('#PCD_SegPrecargaTexto').value = ''; cd7Q('#PCD_SegPrecargaEstado').textContent = 'Precarga eliminada.';
+  cd7RenderLista();
+}
+
 function cd7FilasVisibles() {
   const filas = CD7_DATOS[CD7_LISTA_ACTIVA] || [];
-  const q = cd3Normalizar((cd7Q('#PCD_SegFiltro')?.value || '').trim());
-  let out = filas.filter(f => !q || cd3Normalizar([f.idTarea, f.idInicial, f.idc, f.radicado, f.asunto, f.de, f.instruccion].join(' ')).includes(q));
+  const consulta = cd7ConsultaFiltro();
+  let out = filas.filter(f => cd7Coincide(f, consulta));
   const orden = cd7Q('#PCD_SegOrden')?.value || 'antigua';
   const clave = (f) => orden === 'vence' ? (f.vence ? f.vence.getTime() : null) : f.creacionMs;
   const asc = orden !== 'reciente';
@@ -4639,6 +4848,8 @@ function cd7RenderLista() {
   if (!cont) return;
   const total = (CD7_DATOS[CD7_LISTA_ACTIVA] || []).length;
   const filas = cd7FilasVisibles();
+  const consulta = cd7ConsultaFiltro(); const hl = consulta.vacia ? [] : consulta.palabras;
+  cd7ActualizarInfoFiltro(total, filas.length, consulta);
   const etiqueta = CD7_LISTA_ACTIVA === 'revisar' ? 'Por revisar' : 'Por aprobar';
   const puedePreparar = !!(CD7_SESION.id && CD7_CUENTA && CD7_CUENTA.idFuncionario === CD7_SESION.id);
   if (CD7_ERRORES[CD7_LISTA_ACTIVA]) { cont.innerHTML = `<div style="color:#dc2626; font-size:12px;">❌ No se pudo cargar "${etiqueta}": ${cd7Esc(CD7_ERRORES[CD7_LISTA_ACTIVA])}</div>`; return; }
@@ -4653,12 +4864,14 @@ function cd7RenderLista() {
     return `
     <div data-idtarea="${cd7Esc(f.idTarea)}" style="border:1px solid #e5e7eb; border-radius:8px; padding:9px; margin-bottom:8px; ${String(f.idTarea) === CD7_SELECCIONADA ? 'background:#fef9c3; box-shadow:0 0 0 2px #eab308;' : 'background:#fff;'} ${f.leido ? '' : 'border-left:4px solid #2563eb;'} ${(CD7_ESTILO_FASE[(CD7_FASES[String(f.idTarea)] || {}).fase] || {}).tarjeta || ''}">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
-        <span style="font-weight:${f.leido ? 'normal' : 'bold'}; font-size:12px;"><span class="cd7-id-copiar" data-id="${cd7Esc(f.idInicial)}" title="Clic para copiar el ID TAREA (el mismo que muestra ControlDoc)" style="cursor:copy; text-decoration:underline dotted;">Tarea ${cd7Esc(f.idInicial)}</span><span class="cd7-marca" style="${String(f.idTarea) === CD7_SELECCIONADA ? '' : 'display:none;'} background:#eab308; color:#fff; font-size:10px; font-weight:bold; padding:1px 7px; border-radius:8px; margin-left:6px;">👉 Seleccionada</span> <span style="color:#9ca3af; font-weight:normal; font-size:10px;">· paso ${cd7Esc(f.idTarea)}${Number(f.idc) > 0 ? ' · IDC ' + cd7Esc(f.idc) : ''}</span></span>
+        <span style="font-weight:${f.leido ? 'normal' : 'bold'}; font-size:12px;"><span class="cd7-id-copiar" data-id="${cd7Esc(f.idInicial)}" title="Clic para copiar el ID TAREA (el mismo que muestra ControlDoc)" style="cursor:copy; text-decoration:underline dotted;">Tarea ${cd7Resaltar(f.idInicial, hl)}</span><span class="cd7-marca" style="${String(f.idTarea) === CD7_SELECCIONADA ? '' : 'display:none;'} background:#eab308; color:#fff; font-size:10px; font-weight:bold; padding:1px 7px; border-radius:8px; margin-left:6px;">👉 Seleccionada</span> <span style="color:#9ca3af; font-weight:normal; font-size:10px;">· paso ${cd7Esc(f.idTarea)}${Number(f.idc) > 0 ? ' · IDC ' + cd7Esc(f.idc) : ''}</span></span>
         <span style="padding:1px 8px; border-radius:10px; background:${cI.fondo}; color:${cI.color}; font-weight:bold; font-size:10px;">${cd7Esc(f.instruccion || f.estadoTarea || '—')}</span>
       </div>
-      <div style="margin-top:5px; font-size:12px; word-break:break-word; line-height:1.4;">${cd7Esc(f.asunto)}</div>
+      <div style="margin-top:5px; font-size:12px; word-break:break-word; line-height:1.4;">${cd7Resaltar(f.asunto, hl)}</div>
+      ${cd7HtmlPrecarga(f, hl)}
+      ${Number(f.idc) > 0 || f.radicado ? `<div style="margin-top:3px; font-size:10.5px; color:#6b7280; display:flex; flex-wrap:wrap; gap:12px;">${Number(f.idc) > 0 ? `<span class="cd7-copiar-dato" data-valor="${cd7Esc(f.idc)}" title="Clic para copiar el IDC" style="cursor:copy;">IDC <b style="color:#111827;">${cd7Resaltar(f.idc, hl)}</b></span>` : ''}${f.radicado ? `<span class="cd7-copiar-dato" data-valor="${cd7Esc(f.radicado)}" title="Clic para copiar el radicado" style="cursor:copy;">Rad. <b style="color:#111827;">${cd7Resaltar(f.radicado, hl)}</b></span>` : ''}</div>` : ''}
       <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:5px; font-size:10.5px; color:#6b7280;">
-        <span>De: <b style="color:#111827;">${cd7Esc(f.de) || '—'}</b></span>
+        <span>De: <b style="color:#111827;">${cd7Resaltar(f.de, hl) || '—'}</b></span>
         <span>📅 ${cd7Esc(f.creacion) || '—'}</span>
         <span style="padding:1px 6px; border-radius:4px; background:${sem.fondo}; color:${sem.color}; font-weight:bold;" title="Días desde que llegó a tu bandeja">⏱ ${dias == null ? '—' : dias + ' d en bandeja'}</span>
         ${vence}
@@ -4703,6 +4916,13 @@ function cd7RenderLista() {
     catch (e) { alert('No se pudo abrir el PDF: ' + e.message); }
     finally { b.textContent = original; b.disabled = false; }
   }; });
+  cont.querySelectorAll('.cd7-copiar-ia').forEach(b => { b.onclick = (ev) => {
+    ev.stopPropagation();
+    const f = porId(b.dataset.id); const x = f && cd7BuscarPrecarga(f); if (!x) return;
+    const c = b.dataset.campo;
+    cdCopiarTexto(c === 'accion' ? x.accion : c === 'resumen' ? x.resumen : `${x.accion}\n${x.resumen}`);
+    const o = b.textContent; b.textContent = '✓ Copiado'; setTimeout(() => { b.textContent = o; }, 1000);
+  }; });
   cont.querySelectorAll('.cd7-btn-copiar').forEach(b => { b.onclick = () => {
     const f = porId(b.dataset.id); if (!f) return;
     cdCopiarTexto(String(f[b.dataset.campo] || ''));
@@ -4713,6 +4933,7 @@ function cd7RenderLista() {
     el.addEventListener('click', () => { CD7_SELECCIONADA = el.dataset.idtarea; cd7AplicarSeleccion(); });
   });
   const retro = (el, ok) => { const o = el.textContent; el.textContent = ok; setTimeout(() => { el.textContent = o; }, 1000); };
+  cont.querySelectorAll('.cd7-copiar-dato').forEach(s => { s.onclick = () => { const html = s.innerHTML; cdCopiarTexto(String(s.dataset.valor)); s.textContent = '✓ copiado'; setTimeout(() => { s.innerHTML = html; }, 1000); }; });
   cont.querySelectorAll('.cd7-id-copiar').forEach(s => { s.onclick = () => { cdCopiarTexto(String(s.dataset.id)); retro(s, '✓ copiado'); }; });
   cont.querySelectorAll('.cd7-btn-bajar-pdf').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f && f.nombreArchivo) cd7Ocupado(b, '⏳ Descargando…', () => cd7BajarPdf(f.nombreArchivo, `Tarea_${f.idInicial}${f.orden ? '_paso' + f.orden : ''}.pdf`)); }; });
   cont.querySelectorAll('.cd7-btn-adjuntos').forEach(b => { b.onclick = () => { const f = porId(b.dataset.id); if (f) cd7Ocupado(b, '⏳ Consultando…', () => cd7MostrarAdjuntos(f)); }; });
@@ -4860,17 +5081,17 @@ function cd7RenderMovs() {
   const n = cd7Q('#PCD_SegMovsN'), lista = cd7Q('#PCD_SegMovsLista');
   if (n) n.textContent = String(CD7_MOVS.length);
   if (!lista) return;
-  const icono = { PREPARADO: '📝', CONFIRMADO: '✅', DETECTADO: '🔎' };
+  const icono = { PREPARADO: '📝', CONFIRMADO: '✅', DETECTADO: '🔎', FIRMADO: '✍️', ENVIADO: '🚀' };
   lista.innerHTML = CD7_MOVS.length
-    ? CD7_MOVS.slice(-8).reverse().map(m => `<div style="font-size:10.5px; padding:3px 0; border-bottom:1px solid #f3f4f6;">${icono[m.estado] || '•'} <b>${cd7Esc(m.estado)}</b> · ${cd7Esc(new Date(m.ts).toLocaleString('es-CO'))} · tarea ${cd7Esc(m.idInicial || m.idTarea)}${m.accion ? ' → ' + cd7Esc(m.accion) : ''}${m.destinatario ? ' a <b>' + cd7Esc(m.destinatario) + '</b>' : ''}</div>`).join('')
+    ? CD7_MOVS.slice(-8).reverse().map(m => `<div style="font-size:10.5px; padding:3px 0; border-bottom:1px solid #f3f4f6;">${icono[m.estado] || '•'} <b>${cd7Esc(m.estado)}</b> · ${cd7Esc(new Date(m.ts).toLocaleString('es-CO'))} · tarea ${cd7Esc(m.idInicial || m.idTarea)}${m.accion ? ' → ' + cd7Esc(m.accion) : ''}${m.destinatario ? ' a <b>' + cd7Esc(m.destinatario) + '</b>' : ''}${m.idControl ? ' · IdControl <b>' + cd7Esc(m.idControl) + '</b>' : ''}${m.radicado ? ' · Rad. ' + cd7Esc(m.radicado) : ''}</div>`).join('')
     : '<div style="font-size:11px; color:#9ca3af;">Aún no hay movimientos registrados.</div>';
 }
 
 function cd7ExcelMovimientos() {
   if (!CD7_MOVS.length) return alert('Aún no hay movimientos en el registro.');
   const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const filas = CD7_MOVS.map(m => `<tr><td>${esc(new Date(m.ts).toLocaleString('es-CO'))}</td><td>${esc(m.estado)}</td><td>${esc(m.idInicial || m.idTarea)}</td><td>${esc(m.idTarea)}</td><td>${esc(m.asunto)}</td><td>${esc(m.listaOrigen)}</td><td>${esc(m.accion)}</td><td>${esc(m.destinatario)}</td><td>${esc(m.idDestinatario)}</td><td>${esc(m.comentario)}</td><td>${esc(m.comentarioPreparado)}</td><td>${esc(m.fechaPaso)}</td><td>${esc(m.login)}</td><td>${esc(m.detalle)}</td></tr>`).join('');
-  const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>Fecha de registro</th><th>Estado</th><th>ID Tarea (el de ControlDoc)</th><th>ID del paso (IDTAREADOC)</th><th>Asunto</th><th>Lista de origen</th><th>Acción / instrucción</th><th>Destinatario</th><th>ID destinatario</th><th>Comentario (real si está confirmado)</th><th>Comentario preparado</th><th>Fecha del paso en ControlDoc</th><th>Usuario de la sesión</th><th>Detalle</th></tr>${filas}</table></body></html>`;
+  const filas = CD7_MOVS.map(m => `<tr><td>${esc(new Date(m.ts).toLocaleString('es-CO'))}</td><td>${esc(m.estado)}</td><td>${esc(m.idInicial || m.idTarea)}</td><td>${esc(m.idTarea)}</td><td>${esc(m.asunto)}</td><td>${esc(m.listaOrigen)}</td><td>${esc(m.accion)}</td><td>${esc(m.destinatario)}</td><td>${esc(m.idDestinatario)}</td><td>${esc(m.comentario)}</td><td>${esc(m.comentarioPreparado)}</td><td>${esc(m.fechaPaso)}</td><td>${esc(m.login)}</td><td>${esc(m.detalle)}</td><td>${esc(m.idControl)}</td><td>${esc(m.radicado)}</td></tr>`).join('');
+  const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>Fecha de registro</th><th>Estado</th><th>ID Tarea (el de ControlDoc)</th><th>ID del paso (IDTAREADOC)</th><th>Asunto</th><th>Lista de origen</th><th>Acción / instrucción</th><th>Destinatario</th><th>ID destinatario</th><th>Comentario (real si está confirmado)</th><th>Comentario preparado</th><th>Fecha del paso en ControlDoc</th><th>Usuario de la sesión</th><th>Detalle</th><th>IdControl (documento radicado)</th><th>Radicado</th></tr>${filas}</table></body></html>`;
   cd4DescargarBlob(new Blob([html], { type: 'application/vnd.ms-excel' }), `Movimientos_Tareas_${new Date().toISOString().slice(0, 10)}.xls`);
 }
 
@@ -4926,6 +5147,87 @@ async function cd7ProcesarSnapshot() {
 }
 
 // ── Preparar envío (destinatario + comentario editable + registro) ──
+// ── 🚀 Enviar a revisión desde el panel ──
+// Según el HAR de un envío nativo a revisión, ControlDoc hace: ActProcesadoSi → RegistrarTareaDoc (REVISAR) →
+// InsertarDestinatarios → RegistrarCompletoAccionProyectados → postback del editor que genera el archivo nuevo.
+// Esa cadena la ejecuta el propio ControlDoc (TDOC_GUARDARDOC) en una copia oculta, igual que "Aprobar para firma":
+// aquí solo se dejan el destinatario, la instrucción REVISAR y el comentario, como lo haría la ventana "Enviar documento".
+async function cd7EnviarARevisionAhora(fila, destino, comentario, avance) {
+  let marco = null;
+  try {
+    avance('⏳ 1/3 · Validando la tarea…');
+    const v = await cd2Post(TD_CONFIG.urlValidar, { IDTAREADOC: fila.idTarea });
+    if (!v || !v.RESPUESTA) throw new Error('ControlDoc indica que no se han radicado el/los traslado(s) de esta tarea');
+    try { await cdFetchPost(CD7_URL_LEIDO, { idtareadoc: fila.idTarea }); } catch (e) { /* no impide seguir */ }
+
+    avance('⏳ 2/3 · Cargando el documento en segundo plano…');
+    marco = await cd7CrearControlDocOculto();
+    const W = marco.contentWindow, D = marco.contentDocument;
+    const ruta = (W.GLOBALES && W.GLOBALES.URL) || 'https://controldoc.minsalud.gov.co/Controldoc//';
+    // Registro completo del funcionario destino, como lo trae la ventana nativa.
+    const resp = await fetch(`${ruta}Usuarios/UsuariosObtenerByIDFUNCIONARIO?IDFUNCIONARIO=${encodeURIComponent(destino.idFuncionario)}`, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const dato = await resp.json();
+    const dest = Array.isArray(dato) ? dato[0] : dato;
+    if (!dest || !dest.IDFUNCIONARIO) throw new Error('ControlDoc no devolvió los datos del destinatario');
+
+    W.jQuery('#page_content_inner').empty().load(ruta + 'TareasDoc/CrearDoc', {
+      TipoDocumento: cd7TipoDocCodigo(fila.tipoDoc), IdTareaInicial: fila.idInicial, IdTareaActual: fila.idTarea,
+      Editar: 'SI', INSTRUCCIONES: cd7InstruccionFila(fila), IDRAD: Number(fila.idc) > 0 ? Number(fila.idc) : 0,
+    });
+    await cd7EsperarA(() => typeof W.TDOC_GUARDARDOC === 'function' && typeof W.TDOC_SeleccionarAccion === 'function', CD7_ESPERA_EDITOR_MS, 'pantalla de la tarea');
+    await cd7EsperarA(() => {
+      const f = D.querySelector('#ControlDocCeroPapelPDF');
+      return f && f.getAttribute('name') === 'ECP_EditorCeroPapel' && f.contentDocument && f.contentDocument.readyState === 'complete' && f.contentWindow.ASPx;
+    }, CD7_ESPERA_EDITOR_MS, 'editor del documento');
+    await cd7Dormir(3000);
+
+    if (typeof W.ECP_EXL_VPDF_IDENTIFICAR === 'function' && W.ECP_EXL_VPDF_IDENTIFICAR() !== 'DOC') throw new Error('El editor no tiene seleccionada la última versión en formato DOC');
+    if ((W.VPDF_FirmaPdf || W.ECP_TipoPdf) && !W.VPDF_GuardoPdf) throw new Error('ControlDoc pide guardar primero el documento confirmando la inserción de la firma');
+    let mensajeControlDoc = '';
+    if (typeof W.CD_modal_alert === 'function') {
+      const original = W.CD_modal_alert;
+      W.CD_modal_alert = function (titulo, mensaje) { mensajeControlDoc = String(mensaje || titulo || '').replace(/<[^>]+>/g, ' '); return original.apply(this, arguments); };
+    }
+
+    // Estado que deja la ventana "Enviar documento" al aceptar con Instrucción = Revisar (DestinatarioTarea.js).
+    W.TDOC_SeleccionarAccion('R');                       // TDOC_ACCION = 'REVISAR'
+    W.ETDOC_DESTINATARIO = [dest]; W.ETDOC_SDESTINATARIO = true; W.ETDOC_PROCEDENCIA = 'FUNCIONARIOS';
+    W.ETDOC_INSTRUCCIONES = 'REVISAR'; W.ETDOC_INSTRUCCION = true; W.ETDOC_REVISAR = true;
+    W.ETDOC_OBSERVACIONES = comentario; W.ETDOC_ENVIAR = true;
+    W.TDOC_FUNCIONARIOTAREA = dest; W.TDOC_IDFUNCIONARIOTAREA = dest.IDFUNCIONARIO;
+    W.TDOC_NOMBREFUNCIONARIOTAREA = dest.NOMBRESAPELLIDOS; W.TDOC_TABLAFUNCIONARIO = 'FUNCIONARIOS';
+    W.TDOC_INSTRUCCIONES = 'REVISAR'; W.TDOC_OBSERVACIONES = comentario; W.TDOC_ENVIADO = true;
+
+    avance(`⏳ 3/3 · Enviando a revisión de ${dest.NOMBRESAPELLIDOS || destino.nombre}…`);
+    CD7_MOVS.push({ ts: Date.now(), estado: 'PREPARADO', idTarea: fila.idTarea, idInicial: fila.idInicial, asunto: fila.asunto, listaOrigen: cd7InstruccionFila(fila) === 'APROBAR' ? 'Por aprobar' : 'Por revisar', accion: 'REVISAR', destinatario: destino.nombre, idDestinatario: destino.idFuncionario, comentario, comentarioPreparado: comentario, fechaPaso: '', login: CD7_SESION.login || '', detalle: 'Envío a revisión hecho desde el panel' });
+    cd7GuardarMovs();
+    W.TDOC_GUARDARDOC();
+
+    let cerro = true;
+    try { await cd7EsperarA(() => { const d = marco.contentDocument; return !d || !d.querySelector('#ControlDocCeroPapelPDF'); }, 90000, 'cierre del editor'); } catch (e) { cerro = false; }
+    await cd7Dormir(1500);
+    let salio = null;
+    try {
+      const id = CD7_SESION.id || CD7_CUENTA.idFuncionario;
+      const [rev, apr] = await Promise.all([cd7ConsultarLista('revisar', id), cd7ConsultarLista('aprobar', id)]);
+      salio = ![...rev, ...apr].some(f => String(f.idTarea) === String(fila.idTarea));
+    } catch (e) { salio = null; }
+    if (salio === true) {
+      avance('✅ Enviado a revisión. Actualizando tu bandeja…', 'ok');
+      cd7Aviso(`🚀 Tarea ${fila.idInicial}: enviada a revisión de <b>${cd7Esc(destino.nombre)}</b>.`, 'ok');
+      setTimeout(() => cd7CargarListas(), 1500);
+      return true;
+    }
+    avance(`⚠️ ${salio === false ? 'La tarea sigue en tu bandeja' : 'No pude confirmar si salió de tu bandeja'}${!cerro ? ' y ControlDoc no cerró el editor' : ''}${mensajeControlDoc ? ': ' + mensajeControlDoc : ''}. Revísala antes de reenviar.`, 'error');
+    return false;
+  } catch (e) {
+    avance(`❌ ${e.message}. No se envió nada.`, 'error');
+    return false;
+  } finally {
+    if (marco) setTimeout(() => marco.remove(), 1000);
+  }
+}
+
 function cd7AbrirPreparacion(fila) {
   document.querySelector('#PCD_ModalEnvio')?.remove();
   let accion = 'REVISAR', destino = null, comentarioTocado = false, modo = 'fun', guardado = false;
@@ -4964,6 +5266,7 @@ function cd7AbrirPreparacion(fila) {
         <button id="PCD_EnvioCopiarComentario" style="padding:6px 10px; background:#e5e7eb; border:none; border-radius:5px; cursor:pointer;">📋 Copiar comentario</button>
         <button id="PCD_EnvioCopiarNombre" style="padding:6px 10px; background:#e5e7eb; border:none; border-radius:5px; cursor:pointer;">📋 Copiar nombre del destinatario</button>
         <button id="PCD_EnvioGuardar" style="padding:6px 12px; background:#ea580c; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">📝 Guardar en el registro</button>
+        <button id="PCD_EnvioAhora" title="Envía el documento a revisión del destinatario elegido, en segundo plano" style="padding:6px 12px; background:#15803d; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🚀 Enviar ahora a revisión</button>
       </div>
       <div id="PCD_EnvioEstado" style="margin-top:8px; font-size:11px; color:#6b7280;"></div>
     </div>`;
@@ -4975,6 +5278,7 @@ function cd7AbrirPreparacion(fila) {
     modal.querySelectorAll('.cd7-env-modo').forEach(b => { const a = b.dataset.modo === modo; b.style.background = a ? '#374151' : '#e5e7eb'; b.style.color = a ? '#fff' : '#111827'; });
     m('#PCD_EnvioBuscarTexto').placeholder = modo === 'fun' ? 'Nombre o apellido…' : 'Nombre de la dependencia…';
     if (!comentarioTocado) area.value = CD7_COMENTARIOS_ENVIO[accion];
+    const ahora = m('#PCD_EnvioAhora'); if (ahora) ahora.style.display = (accion === 'REVISAR' && !!(CD7_SESION.id && CD7_CUENTA && CD7_CUENTA.idFuncionario === CD7_SESION.id)) ? '' : 'none';
     const d = m('#PCD_EnvioDestino');
     d.innerHTML = destino ? `Destinatario: <b style="color:#111827;">${cd7Esc(destino.nombre)}</b> <span style="color:#9ca3af;">(ID ${cd7Esc(destino.idFuncionario)})</span>` : 'Aún no has elegido destinatario.';
   };
@@ -5003,6 +5307,15 @@ function cd7AbrirPreparacion(fila) {
     cd7GuardarMovs(); guardado = true; m('#PCD_EnvioGuardar').disabled = true;
     estado.style.color = '#16a34a';
     estado.textContent = `✅ Guardado. Ahora envíalo en ControlDoc (Acción → ${accion === 'REVISAR' ? 'Revisar' : 'Aprobar'}), pega el nombre y el comentario, y luego pulsa 🔄 Actualizar para confirmarlo.`;
+  };
+  m('#PCD_EnvioAhora').onclick = async () => {
+    const comentario = area.value.trim();
+    if (!destino) { estado.style.color = '#dc2626'; estado.textContent = 'Elige un destinatario antes de enviar.'; return; }
+    if (!comentario) { estado.style.color = '#dc2626'; estado.textContent = 'El comentario no puede quedar vacío.'; return; }
+    if (!confirm(`¿Enviar a REVISIÓN de ${destino.nombre}?\n\nTarea ${fila.idInicial || fila.idTarea}\nComentario: ${comentario}\n\nControlDoc genera una versión nueva del documento y no se puede deshacer desde aquí.`)) return;
+    const b = m('#PCD_EnvioAhora'); b.disabled = true; m('#PCD_EnvioGuardar').disabled = true;
+    const ok = await cd7EnviarARevisionAhora(fila, destino, comentario, (txt, tipo) => { estado.style.color = tipo === 'ok' ? '#16a34a' : (tipo === 'error' ? '#dc2626' : '#6b7280'); estado.textContent = txt; });
+    if (ok) setTimeout(cerrar, 2500); else b.disabled = false;
   };
   pintar();
 }
@@ -5059,6 +5372,12 @@ function cd7Cablear() {
   cd7Q('#PCD_SegActualizar').onclick = () => { cd7CargarTodo(); cd7RevisarFirmas(); };
   document.querySelectorAll('.cd7-lista-btn').forEach(b => { b.onclick = () => { CD7_LISTA_ACTIVA = b.dataset.lista; cd7Render(); }; });
   cd7Q('#PCD_SegFiltro').addEventListener('input', cd7RenderLista);
+  cd7RestaurarPrecarga();
+  cd7Q('#PCD_SegCopiarFirmante').onclick = (e) => { cdCopiarTexto('F1RM4NT3'); const b = e.currentTarget, o = b.textContent; b.textContent = '✓ Copiado'; setTimeout(() => { b.textContent = o; }, 1200); };
+  cd7Q('#PCD_SegPrecargaCargar').onclick = cd7CargarPrecarga;
+  cd7Q('#PCD_SegPrecargaLimpiar').onclick = cd7LimpiarPrecarga;
+  if (CD7_PRECARGA.size) cd7Q('#PCD_SegPrecargaEstado').textContent = `📌 ${CD7_PRECARGA.size} fila(s) recordadas de la sesión anterior.`;
+  cd7Q('#PCD_SegFiltroLimpiar').onclick = () => { const i = cd7Q('#PCD_SegFiltro'); i.value = ''; i.focus(); cd7RenderLista(); };
   cd7Q('#PCD_SegOrden').addEventListener('change', cd7RenderLista);
   cd7Q('#PCD_SegTrazaTodas').onclick = cd7TrazaTodas;
   cd7Q('#PCD_SegExcel').onclick = cd7Excel;
@@ -5092,13 +5411,30 @@ const CD3_TABS = [
   { clave: 'buscador',     emoji: '🔎', etiqueta: 'Buscar',    titulo: 'Buscar dependencia / funcionario (fuera de tu lista)', color: '#7c3aed', cuerpoId: '#PCD_CuerpoSec5' },
   { clave: 'tareas',       emoji: '📋', etiqueta: 'Tareas',    titulo: 'Bandeja de Tareas (solo lectura)',            color: '#0891b2', cuerpoId: '#PCD_CuerpoSec6' },
   { clave: 'seguimiento',  emoji: '🧭', etiqueta: 'Seguim.',   titulo: 'Seguimiento y trazabilidad de tareas por revisar y por aprobar', color: '#ea580c', cuerpoId: '#PCD_CuerpoSec9' },
-  { clave: 'detalleTarea', emoji: '🧾', etiqueta: 'Detalle',   titulo: 'Detalle de Tarea (flujo completo por IDTAREADOC)', color: '#b45309', cuerpoId: '#PCD_CuerpoSec7' },
+  { clave: 'global',       emoji: '🌐', etiqueta: 'Global',    titulo: 'Búsqueda global: funcionarios, dependencias y jefaturas', color: '#0f766e', cuerpoId: '#PCD_CuerpoSec11' },
   { clave: 'comentarios',  emoji: '💬', etiqueta: 'Coment.',   titulo: 'Comentarios de gestión',                      color: '#0d9488', cuerpoId: '#PCD_CuerpoComentarios' },
   { clave: 'palabras',     emoji: '⚙️', etiqueta: 'Palabras',  titulo: 'Configuración de Palabras Clave',             color: '#6b7280', cuerpoId: '#PCD_CuerpoSec1' },
   { clave: 'descargas',    emoji: '⬇️', etiqueta: 'Descargas', titulo: 'Descarga masiva (PDF, adjuntos, o ambos)',    color: '#be123c', cuerpoId: '#PCD_CuerpoSec8' },
   { clave: 'ia',           emoji: '🤖', etiqueta: 'IA',        titulo: 'Reasignación masiva desde tabla generada por IA', color: '#4f46e5', cuerpoId: '#PCD_CuerpoSec10' },
 ];
 let CD3_TAB_ACTIVA = 'cargar';
+
+// Subpestañas de 📋 Tareas: Bandeja (por cuenta) y Detalle (flujo de un ID tarea).
+function cd4CambiarSub(clave) {
+  const det = clave === 'detalle';
+  const b = document.querySelector('#PCD_SubTareasBandeja'), d = document.querySelector('#PCD_SubTareasDetalle');
+  if (b) b.style.display = det ? 'none' : 'block';
+  if (d) d.style.display = det ? 'block' : 'none';
+  [['#PCD_SubTabTareasBandeja', !det, '#0891b2'], ['#PCD_SubTabTareasDetalle', det, '#b45309']].forEach(([s, act, col]) => {
+    const btn = document.querySelector(s); if (!btn) return;
+    btn.style.background = act ? col : '#e5e7eb'; btn.style.color = act ? '#fff' : '#111827';
+  });
+}
+function cd4VerFlujo(idTarea) {
+  cd3CambiarTab('tareas'); cd4CambiarSub('detalle');
+  const inp = document.querySelector('#TD_Input'); if (inp) inp.value = idTarea;
+  tdEjecutarBusqueda();
+}
 
 function cd3CambiarTab(clave) {
   CD3_TAB_ACTIVA = clave;
@@ -5292,6 +5628,11 @@ function cd3CrearPanel() {
       </div>
 
       <div id="PCD_CuerpoSec6" style="display:none;">
+        <div style="display:flex; gap:4px; margin-bottom:8px;">
+          <button id="PCD_SubTabTareasBandeja" class="cd4-subtab-btn" data-sub="bandeja" style="flex:1; padding:7px; border:none; border-radius:6px; cursor:pointer; font-size:11px; font-weight:bold;">📋 Bandeja</button>
+          <button id="PCD_SubTabTareasDetalle" class="cd4-subtab-btn" data-sub="detalle" style="flex:1; padding:7px; border:none; border-radius:6px; cursor:pointer; font-size:11px; font-weight:bold;">🧾 Detalle por ID tarea</button>
+        </div>
+        <div id="PCD_SubTareasBandeja">
         <label style="color:#6b7280; font-size:11px; font-weight:bold;">Cuenta</label>
         <div style="display:flex; gap:6px; margin:3px 0 6px;">
           <input id="PCD_TareasBuscarTexto" type="text" placeholder="🌐 Buscar cuenta por nombre o apellido" style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
@@ -5314,21 +5655,25 @@ function cd3CrearPanel() {
         </div>
         <div id="PCD_TareasEstado" style="font-size:11px; color:#6b7280; margin-bottom:6px;">Elige una lista para cargarla.</div>
         <div id="PCD_TareasTabla" style="max-height:540px; overflow:auto;"></div>
-      </div>
+        </div>
 
-      <div id="PCD_CuerpoSec7" style="display:none;">
+        <div id="PCD_SubTareasDetalle" style="display:none;">
         <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">A diferencia de "🔎 Ver Seguimiento" (que usa el IDC), esto busca por <b>IDTAREADOC</b> y muestra <b>todas</b> las versiones del flujo, no solo la última — además de quién es el remitente real y quién tiene la sesión activa.</p>
         <div style="display:flex; gap:6px; margin-bottom:10px;">
           <input id="TD_Input" type="text" placeholder="IDTAREADOC (ej: 1494241)" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px;">
           <button id="TD_Buscar" style="padding:6px 12px; background:#b45309; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Buscar</button>
         </div>
         <div id="TD_Contenido"></div>
+        </div>
       </div>
 
       <div id="PCD_CuerpoSec9" style="display:none;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
           <b style="font-size:12px;">🧭 Seguimiento y trazabilidad (solo lectura)</b>
+          <span style="display:flex; gap:4px;">
+          <button id="PCD_SegCopiarFirmante" title="Copiar el indicador de firmante: F1RM4NT3" style="padding:4px 10px; background:#dcfce7; color:#166534; border:1px solid #86efac; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">✍️ Copiar F1RM4NT3</button>
           <button id="PCD_SegActualizar" style="padding:4px 10px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px;">🔄 Actualizar</button>
+          </span>
         </div>
         <div id="PCD_SegContadores" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; margin-bottom:6px;"></div>
         <div id="PCD_SegCuenta" style="font-size:11px; color:#6b7280; margin-bottom:8px;"></div>
@@ -5358,7 +5703,10 @@ function cd3CrearPanel() {
           <button class="cd7-lista-btn" data-lista="aprobar" style="flex:1; padding:7px; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:bold;">✍️ Por Aprobar</button>
         </div>
         <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap;">
-          <input id="PCD_SegFiltro" type="text" placeholder="Filtrar por asunto, ID, persona…" style="flex:1; min-width:140px; padding:5px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
+          <div style="position:relative; flex:1; min-width:200px;">
+            <input id="PCD_SegFiltro" type="text" autocomplete="off" placeholder="🔎 Buscar por IDC, radicado, asunto, ID tarea o persona…" title="Escribe unas letras o números: filtra al instante. Varias palabras = todas deben aparecer. Varios IDs separados por coma o espacio = cualquiera de ellos." style="width:100%; box-sizing:border-box; padding:6px 26px 6px 8px; border:1px solid #ccc; border-radius:4px; font-size:12px;">
+            <button id="PCD_SegFiltroLimpiar" title="Limpiar la búsqueda" style="display:none; position:absolute; right:3px; top:50%; transform:translateY(-50%); border:none; background:none; cursor:pointer; font-size:13px; color:#6b7280; padding:2px 6px;">✕</button>
+          </div>
           <select id="PCD_SegOrden" style="padding:4px; border:1px solid #ccc; border-radius:4px; font-size:11px;">
             <option value="antigua">Más antigua primero</option>
             <option value="reciente">Más reciente primero</option>
@@ -5367,6 +5715,16 @@ function cd3CrearPanel() {
           <button id="PCD_SegTrazaTodas" style="padding:4px 10px; background:#ea580c; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📜 Trazabilidad de todas</button>
           <button id="PCD_SegExcel" style="padding:4px 10px; background:#374151; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:11px;">📥 Excel</button>
         </div>
+        <div id="PCD_SegFiltroInfo" style="font-size:10.5px; color:#6b7280; margin:-3px 0 6px;"></div>
+        <details style="margin-bottom:8px; border:1px solid #ddd6fe; background:#faf5ff; border-radius:6px; padding:6px 8px;">
+          <summary style="cursor:pointer; font-size:11px; font-weight:bold; color:#6d28d9;">🤖 Precargar tabla de IA en las tarjetas (IDT · Asunto · Acción · Resumen)</summary>
+          <textarea id="PCD_SegPrecargaTexto" rows="5" placeholder="Pega aquí la tabla (Markdown o copiada del chat):&#10;IDT&#9;Asunto&#9;Acción&#9;Resumen" style="width:100%; box-sizing:border-box; margin-top:6px; padding:6px; border:1px solid #ccc; border-radius:6px; font-size:11px;"></textarea>
+          <div style="display:flex; gap:6px; margin-top:4px;">
+            <button id="PCD_SegPrecargaCargar" style="flex:1; padding:6px; background:#7c3aed; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold; font-size:11px;">📥 Precargar en las tarjetas</button>
+            <button id="PCD_SegPrecargaLimpiar" style="padding:6px 10px; background:#e5e7eb; border:none; border-radius:6px; cursor:pointer; font-size:11px;">🗑 Limpiar</button>
+          </div>
+          <div id="PCD_SegPrecargaEstado" style="font-size:10.5px; color:#6b7280; margin-top:4px;"></div>
+        </details>
         <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:2px;">
           <span style="font-size:11px; color:#6b7280;">📋 Copiar ID tarea de los primeros:</span>
           <button class="cd7-btn-copiar-primeros" data-n="5" style="padding:3px 9px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">5</button>
@@ -5428,12 +5786,13 @@ function cd3CrearPanel() {
         </div>
 
         <div id="PCD_SubCuerpoTarea" style="display:none;">
-          <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">Pega uno o varios <b>IDTAREADOC</b> (no es el IDC). Para cada uno se busca, dentro de su flujo, el paso más reciente que tenga un PDF diligenciado, y se descarga esa versión. Solo lectura: no modifica ninguna tarea.</p>
+          <p style="color:#6b7280; font-size:11px; margin:0 0 8px;">Pega uno o varios <b>IDTAREADOC</b> (no es el IDC). Para cada uno se busca, dentro de su flujo, el paso más reciente que tenga un PDF diligenciado, y se descarga esa versión. Si la tarea tiene adjuntos, se arma un ZIP por ID (PDF + adjuntos) dentro del ZIP general; si no tiene, el PDF va suelto en el ZIP general. Solo lectura: no modifica ninguna tarea.</p>
           <textarea id="PCD_TdmIds" rows="5" placeholder="466393&#10;466401, 466420" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:6px; margin-bottom:8px; box-sizing:border-box;"></textarea>
+          <label style="display:block; font-size:11px; color:#374151; margin-bottom:6px; cursor:pointer;"><input type="checkbox" id="PCD_TdmAdjuntos" checked> 📎 Incluir adjuntos (un ZIP por ID tarea)</label>
           <div style="display:flex; gap:6px; margin-bottom:8px;">
             <select id="PCD_TdmModo" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:6px; font-size:12px;">
-              <option value="zip">Un solo ZIP con todos los PDF (recomendado)</option>
-              <option value="individual">Un PDF por archivo</option>
+              <option value="zip">Un solo ZIP general (recomendado)</option>
+              <option value="individual">Un archivo por ID tarea (PDF o ZIP)</option>
             </select>
             <button id="PCD_TdmEjecutar" style="padding:6px 12px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">⬇ Descargar</button>
           </div>
@@ -5503,6 +5862,7 @@ function cd3CrearPanel() {
   document.querySelectorAll('.cd5-btn-descarga').forEach(btn => { btn.onclick = () => cd5DescargarMasivo(btn.dataset.modo); });
   cd7Cablear();
   cd8InyectarPestana(); // contenido de la pestaña 🤖 IA (sección más abajo)
+  cd9InyectarPestana(); // contenido de la pestaña 🌐 Global
   document.querySelectorAll('.cd6-subtab-btn').forEach(btn => { btn.onclick = () => cd6CambiarSubtab(btn.dataset.sub); });
   document.querySelector('#PCD_TdmEjecutar').onclick = () => cd6Ejecutar(false);
   document.querySelector('#PCD_TdmReintentar').onclick = () => cd6Ejecutar(true);
@@ -5515,6 +5875,8 @@ function cd3CrearPanel() {
   };
   cd3CambiarTab(CD3_TAB_ACTIVA);
   document.querySelector('#TD_Buscar').onclick = tdEjecutarBusqueda;
+  document.querySelectorAll('.cd4-subtab-btn').forEach(btn => { btn.onclick = () => cd4CambiarSub(btn.dataset.sub); });
+  cd4CambiarSub('bandeja');
   document.querySelector('#TD_Input').addEventListener('keydown', (e) => { if (e.key === 'Enter') tdEjecutarBusqueda(); });
 
   document.querySelector('#PCD_Clasificar').onclick = cd3EjecutarClasificacion;
@@ -6262,6 +6624,235 @@ ${f.mensaje ? `<div style="font-size:10.5px; color:${est.color === '#fff' ? est.
     cd8ReasignarFila(f);
   };
 }
+// ════════════════════════════════════════════════════════════════
+// ═══ 🌐 Búsqueda global: funcionarios, dependencias y jefaturas (solo lectura) ═══
+// - Funcionario → su dependencia, cargo y el jefe de esa dependencia.
+// - Dependencia (nombre, código o unidad) → jefe(s) y funcionarios del área.
+// - Directorio de jefaturas: consulta el jefe de cada dependencia una vez y lo guarda en memoria.
+// Solo se muestran nombre, cargo y dependencia (se descartan los demás campos de ControlDoc).
+// ════════════════════════════════════════════════════════════════
+let CD9_CAT = null;                 // dependencias: [{ idOficina, idUnidad, nombre, unidad, codigo, norm }]
+const CD9_JEFES = new Map();        // 'unidad-oficina' → [{ idFuncionario, nombre, cargo }]
+let CD9_DIRECTORIO_LISTO = false;
+let CD9_ULTIMO = [];                // última lista de resultados (para copiar)
+const CD9_CARGOS = [['', 'Todos los cargos'], ['2', 'Jefe'], ['4', 'Gestor'], ['3', 'Radicador'], ['1', 'Administrador']];   // arreglo: un objeto reordenaría las claves numéricas
+
+function cd9Q(s) { return document.querySelector(s); }
+function cd9Clave(o) { return `${o.idUnidad}-${o.idOficina}`; }
+
+async function cd9CargarCatalogo() {
+  if (CD9_CAT) return CD9_CAT;
+  const resp = await cdFetchGet(CD_CONFIG.urlOficinas);
+  const data = await resp.json();
+  const vistos = new Set();
+  CD9_CAT = (data || [])
+    .filter(o => o.IDOFICINAPRODUCTORA != null && o.NOMBRE && String(o.ESTADO || 'SI').toUpperCase() !== 'NO')
+    .map(o => ({
+      idOficina: Number(o.IDOFICINAPRODUCTORA), idUnidad: Number(o.IDUNIDADADMINISTRATIVA),
+      nombre: String(o.NOMBRE), unidad: String(o.UNIDADADMINISTRATIVA || ''), codigo: String(o.CODIGO || ''),
+    }))
+    .filter(o => { const k = cd9Clave(o); if (vistos.has(k)) return false; vistos.add(k); return true; })
+    .map(o => ({ ...o, norm: cd3Normalizar(`${o.nombre} ${o.codigo} ${o.unidad}`) }))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  return CD9_CAT;
+}
+
+async function cd9JefesDe(o) {
+  const k = cd9Clave(o);
+  if (CD9_JEFES.has(k)) return CD9_JEFES.get(k);
+  const lista = await cd7ListarJefes(o.idOficina, o.idUnidad);
+  CD9_JEFES.set(k, lista);
+  return lista;
+}
+
+function cd9BuscarDependencias(texto, max = 30) {
+  const q = cd3Normalizar(texto).replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+  if (!q.length) return [];
+  const exactas = (CD9_CAT || []).filter(o => q.every(w => o.norm.includes(w)));
+  if (exactas.length) return exactas.slice(0, max);
+  // Aproximada (nombres abreviados o con otras palabras): reutiliza el puntaje de la pestaña IA.
+  const cons = cd8Separar(cd8Tokens(texto));
+  return (CD9_CAT || []).map(o => ({ o, p: cd8Puntaje(cons, { ...cd8Separar(cd8Tokens(o.nombre)) }) }))
+    .filter(x => x.p >= 0.5).sort((a, b) => b.p - a.p).slice(0, max).map(x => x.o);
+}
+
+function cd9DependenciaDe(idUnidad, idOficina) {
+  return (CD9_CAT || []).find(o => o.idOficina === Number(idOficina) && o.idUnidad === Number(idUnidad))
+    || (CD9_CAT || []).find(o => o.idOficina === Number(idOficina));
+}
+
+function cd9ChipCargo(cargo) {
+  const c = cd3Normalizar(cargo);
+  const col = c.includes('JEFE') ? ['#fef3c7', '#92400e'] : c.includes('GESTOR') ? ['#dbeafe', '#1e40af'] : ['#e5e7eb', '#374151'];
+  return `<span style="background:${col[0]}; color:${col[1]}; border-radius:10px; padding:1px 7px; font-size:10px; font-weight:bold;">${cd8Esc(cargo || '—')}</span>`;
+}
+
+function cd9TarjetaJefes(o, jefes) {
+  if (jefes === undefined) return `<button class="cd9-acc" data-acc="jefe" data-k="${cd9Clave(o)}" style="padding:3px 8px; font-size:11px; border:none; border-radius:5px; background:#0f766e; color:#fff; cursor:pointer;">👔 Ver jefe</button>`;
+  if (jefes === null) return `<span style="color:#b91c1c; font-size:11px;">No se pudo consultar el jefe.</span>`;
+  if (!jefes.length) return `<span style="color:#6b7280; font-size:11px;">Sin jefe registrado en ControlDoc.</span>`;
+  return jefes.map(j => `<div style="display:flex; gap:6px; align-items:center; margin-top:2px;">👔 <b style="font-size:12px;">${cd8Esc(j.nombre)}</b> ${cd9ChipCargo(j.cargo)}
+    <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(j.nombre)}" title="Copiar nombre" style="border:none; background:none; cursor:pointer; font-size:12px;">📋</button>
+    <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(j.nombre + ' — ' + o.nombre)}" title="Copiar nombre y dependencia" style="border:none; background:none; cursor:pointer; font-size:11px;">📋+🏢</button>
+    <button class="cd9-acc" data-acc="tareas" data-id="${j.idFuncionario}" data-n="${cd8Esc(j.nombre)}" title="Ver sus tareas en Seguimiento" style="border:none; background:none; cursor:pointer; font-size:12px;">🧭</button></div>`).join('');
+}
+
+function cd9HtmlDependencia(o, jefes) {
+  return `<div class="cd9-card" data-k="${cd9Clave(o)}" style="border:1px solid #99f6e4; background:#f0fdfa; border-radius:8px; padding:7px 9px; margin-bottom:6px;">
+    <div style="display:flex; justify-content:space-between; gap:6px;"><b style="font-size:12px; color:#115e59;">🏢 ${cd8Esc(o.nombre)}</b>
+    <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(o.nombre)}" title="Copiar nombre" style="border:none; background:none; cursor:pointer;">📋</button></div>
+    <div style="font-size:10px; color:#6b7280; margin-bottom:3px;">${cd8Esc(o.unidad || '—')}${o.codigo ? ' · Código ' + cd8Esc(o.codigo) : ''}</div>
+    <div class="cd9-jefes">${cd9TarjetaJefes(o, jefes)}</div>
+    <div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap;"><button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(o.nombre)}" style="padding:2px 7px; font-size:10px; border:1px solid #99f6e4; background:#f0fdfa; border-radius:5px; cursor:pointer;">📋 Dependencia</button>
+      <button class="cd9-acc" data-acc="equipo" data-k="${cd9Clave(o)}" style="padding:2px 7px; font-size:10px; border:1px solid #5eead4; background:#fff; border-radius:5px; cursor:pointer;">👥 Funcionarios del área</button></div>
+    <div class="cd9-equipo"></div></div>`;
+}
+
+function cd9HtmlFuncionario(x) {
+  const f = x.resumen, c = x.crudo;
+  const dep = cd9DependenciaDe(c.IDUNIDADADMINISTRATIVA, c.IDOFICINAPRODUCTORA);
+  const nombreDep = dep ? dep.nombre : (f.oficina || '—');
+  const unidad = dep ? dep.unidad : (c.UNIDADADMINISTRATIVA || '');
+  const k = dep ? cd9Clave(dep) : `${Number(c.IDUNIDADADMINISTRATIVA)}-${Number(c.IDOFICINAPRODUCTORA)}`;
+  return `<div class="cd9-card" data-k="${k}" style="border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:7px 9px; margin-bottom:6px;">
+    <div style="display:flex; justify-content:space-between; gap:6px;"><span><b style="font-size:12px;">👤 ${cd8Esc(f.nombre)}</b> ${cd9ChipCargo(f.cargo)}</span>
+    <span><button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(f.nombre)}" title="Copiar nombre" style="border:none; background:none; cursor:pointer;">📋</button>
+    <button class="cd9-acc" data-acc="tareas" data-id="${f.idFuncionario}" data-n="${cd8Esc(f.nombre)}" title="Ver sus tareas en Seguimiento" style="border:none; background:none; cursor:pointer;">🧭</button></span></div>
+    <div style="font-size:11px; color:#374151;">🏢 ${cd8Esc(nombreDep)}</div>
+    <div style="display:flex; gap:4px; flex-wrap:wrap; margin:3px 0;">
+      <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(f.nombre)}" style="padding:2px 7px; font-size:10px; border:1px solid #99f6e4; background:#f0fdfa; border-radius:5px; cursor:pointer;">📋 Nombre</button>
+      <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(nombreDep)}" style="padding:2px 7px; font-size:10px; border:1px solid #99f6e4; background:#f0fdfa; border-radius:5px; cursor:pointer;">📋 Dependencia</button>
+      <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(f.nombre + ' — ' + nombreDep)}" style="padding:2px 7px; font-size:10px; border:1px solid #99f6e4; background:#f0fdfa; border-radius:5px; cursor:pointer;">📋 Ambos</button>
+    </div>
+    ${unidad ? `<div style="font-size:10px; color:#6b7280;">${cd8Esc(unidad)}</div>` : ''}
+    <div class="cd9-jefes" style="margin-top:3px;">${dep ? cd9TarjetaJefes(dep, CD9_JEFES.get(k)) : ''}</div>
+    ${dep ? `<div style="margin-top:4px;"><button class="cd9-acc" data-acc="equipo" data-k="${k}" style="padding:2px 7px; font-size:10px; border:1px solid #5eead4; background:#fff; border-radius:5px; cursor:pointer;">👥 Funcionarios del área</button></div><div class="cd9-equipo"></div>` : ''}</div>`;
+}
+
+function cd9TextoCopiable() {
+  return CD9_ULTIMO.map(r => r.join('\t')).join('\n');
+}
+
+async function cd9Buscar() {
+  const cont = cd9Q('#PCD9_Resultados'), estado = cd9Q('#PCD9_Estado');
+  const texto = (cd9Q('#PCD9_Texto').value || '').trim();
+  const modo = cd9Q('#PCD9_Modo').value, cargo = cd9Q('#PCD9_Cargo').value;
+  if (texto.length < 2) { estado.textContent = 'Escribe al menos 2 letras.'; return; }
+  estado.textContent = '⏳ Buscando…'; cont.innerHTML = ''; CD9_ULTIMO = [];
+  try {
+    await cd9CargarCatalogo();
+    let html = '', nDep = 0, nFun = 0;
+    if (modo === 'todo' || modo === 'dep' || modo === 'jefes') {
+      const deps = cd9BuscarDependencias(texto, modo === 'todo' ? 8 : 30);
+      nDep = deps.length;
+      // Jefes de las primeras dependencias: se consultan de una vez (máx. 12, 4 en paralelo).
+      const aCargar = deps.slice(0, 12);
+      await ejecutarConPool(aCargar, 4, async (o) => { try { await cd9JefesDe(o); } catch (e) { CD9_JEFES.set(cd9Clave(o), null); } });
+      deps.forEach(o => {
+        const j = CD9_JEFES.get(cd9Clave(o));
+        html += cd9HtmlDependencia(o, j);
+        CD9_ULTIMO.push([o.nombre, o.unidad, (j || []).map(x => x.nombre).join(' / ')]);
+      });
+    }
+    if (modo === 'todo' || modo === 'fun') {
+      let funcs = await cd3BuscarFuncionariosCrudo(texto);
+      if (cargo) funcs = funcs.filter(x => String(x.crudo.IDCARGO) === cargo);
+      nFun = funcs.length;
+      funcs.slice(0, 40).forEach(x => {
+        html += cd9HtmlFuncionario(x);
+        const d = cd9DependenciaDe(x.crudo.IDUNIDADADMINISTRATIVA, x.crudo.IDOFICINAPRODUCTORA);
+        CD9_ULTIMO.push([x.resumen.nombre, x.resumen.cargo, d ? d.nombre : x.resumen.oficina]);
+      });
+      if (funcs.length > 40) html += `<div style="font-size:11px; color:#6b7280;">Se muestran 40 de ${funcs.length}; afina la búsqueda.</div>`;
+    }
+    cont.innerHTML = html || '<div style="color:#6b7280; font-size:12px; padding:8px;">Sin resultados.</div>';
+    estado.textContent = `${nDep} dependencia(s) · ${nFun} funcionario(s)`;
+  } catch (e) {
+    estado.textContent = '❌ ' + e.message;
+  }
+}
+
+async function cd9CargarDirectorio() {
+  const estado = cd9Q('#PCD9_Estado'), btn = cd9Q('#PCD9_Directorio');
+  btn.disabled = true;
+  try {
+    await cd9CargarCatalogo();
+    const pend = CD9_CAT.filter(o => !CD9_JEFES.has(cd9Clave(o)));
+    let hechos = 0;
+    await ejecutarConPool(pend, 5, async (o) => {
+      try { await cd9JefesDe(o); } catch (e) { /* se reintenta en otra carga */ }
+      hechos++; estado.textContent = `⏳ Directorio: ${hechos}/${pend.length}`;
+    });
+    CD9_DIRECTORIO_LISTO = true;
+    const filas = CD9_CAT.map(o => [o.nombre, o.unidad, (CD9_JEFES.get(cd9Clave(o)) || []).map(j => j.nombre).join(' / ')]);
+    const conJefe = filas.filter(f => f[2]).length;
+    CD9_ULTIMO = filas;
+    cd9Q('#PCD9_Resultados').innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:11px;"><thead><tr style="background:#ccfbf1; text-align:left;"><th style="padding:3px;">Dependencia</th><th>Jefe</th></tr></thead><tbody>${
+      filas.map(f => `<tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:3px;">${cd8Esc(f[0])}</td><td>${cd8Esc(f[2] || '—')}</td></tr>`).join('')}</tbody></table>`;
+    estado.textContent = `Directorio: ${conJefe} de ${filas.length} dependencias con jefe. Usa 📋 Copiar para llevarlo a Excel.`;
+  } catch (e) { estado.textContent = '❌ ' + e.message; }
+  btn.disabled = false;
+}
+
+function cd9Cablear() {
+  const cont = cd9Q('#PCD9_Resultados');
+  cd9Q('#PCD9_Buscar').onclick = cd9Buscar;
+  cd9Q('#PCD9_Texto').addEventListener('keydown', e => { if (e.key === 'Enter') cd9Buscar(); });
+  cd9Q('#PCD9_Directorio').onclick = cd9CargarDirectorio;
+  cd9Q('#PCD9_Copiar').onclick = () => { cdCopiarTexto(cd9TextoCopiable()); cd9Q('#PCD9_Estado').textContent = `📋 ${CD9_ULTIMO.length} fila(s) copiada(s).`; };
+  cd9Q('#PCD9_Modo').onchange = () => { cd9Q('#PCD9_Cargo').style.display = ['todo', 'fun'].includes(cd9Q('#PCD9_Modo').value) ? '' : 'none'; };
+  cont.addEventListener('click', async (e) => {
+    const b = e.target.closest('.cd9-acc'); if (!b) return;
+    const card = b.closest('.cd9-card');
+    const acc = b.dataset.acc;
+    if (acc === 'copiar') { cdCopiarTexto(b.dataset.v); const o = b.textContent; b.textContent = '✓'; setTimeout(() => { b.textContent = o; }, 1000); return; }
+    if (acc === 'tareas') {
+      cd3CambiarTab('seguimiento');
+      try { await cd7CambiarCuenta({ idFuncionario: b.dataset.id, nombre: b.dataset.n }); } catch (err) { alert('No se pudieron cargar sus tareas: ' + err.message); }
+      return;
+    }
+    const [u, of] = (b.dataset.k || '').split('-').map(Number);
+    const o = cd9DependenciaDe(u, of) || { idUnidad: u, idOficina: of, nombre: '' };
+    if (acc === 'jefe') {
+      b.disabled = true; b.textContent = '⏳';
+      let j; try { j = await cd9JefesDe(o); } catch (err) { j = null; }
+      card.querySelector('.cd9-jefes').innerHTML = cd9TarjetaJefes(o, j);
+    }
+    if (acc === 'equipo') {
+      const box = card.querySelector('.cd9-equipo');
+      if (box.innerHTML) { box.innerHTML = ''; return; }
+      box.innerHTML = '<div style="font-size:11px; color:#6b7280;">⏳ Consultando…</div>';
+      try {
+        const data = await cd3ConsultarFuncionarios({ IDUNIDADADMINISTRATIVA: u, IDOFICINAPRODUCTORA: of, IDCARGO: cd9Q('#PCD9_Cargo').value, NOMBRES: '', APELLIDOS: '' });
+        const lista = (data || []).map(cd3ResumirFuncionario).filter(f => f.idFuncionario).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+        box.innerHTML = lista.length ? `<div style="max-height:150px; overflow:auto; margin-top:4px; font-size:11px;">${lista.map(f => `<div style="display:flex; justify-content:space-between; gap:4px; padding:1px 0;"><span>${cd8Esc(f.nombre)} ${cd9ChipCargo(f.cargo)}</span><button class="cd9-acc" data-acc="tareas" data-id="${f.idFuncionario}" data-n="${cd8Esc(f.nombre)}" title="Ver sus tareas" style="border:none; background:none; cursor:pointer;">🧭</button></div>`).join('')}</div>` : '<div style="font-size:11px; color:#6b7280;">Sin funcionarios.</div>';
+      } catch (err) { box.innerHTML = '<div style="font-size:11px; color:#b91c1c;">No se pudo consultar.</div>'; }
+    }
+  });
+}
+
+function cd9InyectarPestana() {
+  const cuerpoGeneral = document.querySelector('#PCD_CuerpoGeneral');
+  if (!cuerpoGeneral || document.querySelector('#PCD_CuerpoSec11')) return;
+  const div = document.createElement('div');
+  div.id = 'PCD_CuerpoSec11';
+  div.style.display = 'none';
+  div.innerHTML = `
+<p style="color:#6b7280; font-size:11px; margin:0 0 6px;">Consulta rápida de jefaturas: escribe el nombre de un <b>funcionario</b> (ver su dependencia y jefe) o de una <b>dependencia</b> (ver su jefe y equipo). Solo lectura.</p>
+<div style="display:flex; gap:4px; margin-bottom:5px;">
+<input id="PCD9_Texto" type="text" placeholder="Nombre, apellido, dependencia, código…" style="flex:1; padding:6px 8px; border:1px solid #99f6e4; border-radius:6px; font-size:12px;">
+<button id="PCD9_Buscar" style="padding:6px 12px; background:#0f766e; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🔎</button></div>
+<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:6px; font-size:11px;">
+<select id="PCD9_Modo" style="padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;"><option value="todo">Todo</option><option value="fun">Solo funcionarios</option><option value="dep">Solo dependencias</option><option value="jefes">Jefes por dependencia</option></select>
+<select id="PCD9_Cargo" style="padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;">${CD9_CARGOS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select>
+<button id="PCD9_Directorio" title="Consulta el jefe de cada dependencia (una vez)" style="padding:3px 8px; border:1px solid #5eead4; background:#f0fdfa; border-radius:5px; cursor:pointer; font-size:11px;">📚 Directorio de jefaturas</button>
+<button id="PCD9_Copiar" style="padding:3px 8px; border:1px solid #ccc; background:#fff; border-radius:5px; cursor:pointer; font-size:11px;">📋 Copiar</button></div>
+<div id="PCD9_Estado" style="font-size:11px; color:#4b5563; margin-bottom:4px;"></div>
+<div id="PCD9_Resultados" style="max-height:430px; overflow:auto;"></div>`;
+  cuerpoGeneral.appendChild(div);
+  cd9Cablear();
+}
+
 function cd8InyectarPestana() {
   const cuerpoGeneral = document.querySelector('#PCD_CuerpoGeneral');
   if (!cuerpoGeneral || document.querySelector('#PCD_CuerpoSec10')) return;
@@ -6356,3 +6947,304 @@ ${CD3_COMENTARIOS_REASIGNACION.map((c, i) => `<option value="${i}">${cd8Esc(cd3T
 // ════════════════════════════════════════════════════════════════
 cdCrearPanel();
 cd3CrearPanel();
+
+// ════════════════════════════════════════════════════════════════
+// ═══ 🎨 TEMA DE COLOR (botón 🎨 abajo a la izquierda; recuerda el último color) ═══
+// ════════════════════════════════════════════════════════════════
+try {
+// ==========================================
+// TEMA DE COLOR PARA CONTROLDOC (rojo por defecto, o el color que elijas)
+// Cambia los azules de la interfaz (barra superior, botones, títulos, enlaces,
+// degradados, hover…) por una gama de rojos, o por cualquier color que elijas
+// con el selector. Conserva los claros y oscuros de cada azul, así que los
+// botones siguen viéndose en relieve.
+// También recolorea los paneles de tus otros scripts (Seguimiento, Clasificador…).
+//
+// USO: pegar en la consola (F12) estando en ControlDoc. Aparece un botón 🎨
+// abajo a la izquierda: elige una gama roja, un color rápido, cualquier color
+// con el selector, o vuelve al azul original.
+// Solo cambia estilos en esta pestaña: no hace consultas ni toca datos.
+// Al recargar la página se pierde; vuelve a pegarlo (recuerda el último color).
+// ==========================================
+(() => {
+  'use strict';
+  if (window.CD_TEMA && window.CD_TEMA.destruir) { try { window.CD_TEMA.destruir(); } catch (e) { /* versión anterior */ } }
+
+  const CLAVE_LS = 'CD_TEMA_ROJO_GAMA';
+  const GAMAS = {
+    carmesi:  { nombre: 'Carmesí',  hue: 352, sat: 1.00, muestra: ['#e57373', '#c62839', '#8e1b2a'] },
+    vino:     { nombre: 'Vino',     hue: 340, sat: 0.95, muestra: ['#d97c93', '#a8233f', '#6e1429'] },
+    ladrillo: { nombre: 'Ladrillo', hue: 8,   sat: 0.90, muestra: ['#e48a79', '#b8412c', '#7a2616'] },
+    coral:    { nombre: 'Coral',    hue: 14,  sat: 0.85, muestra: ['#f2a08e', '#d9604a', '#a23a28'] },
+  };
+  const GAMA_INICIAL = 'carmesi';
+  const AZUL_BASE = { s: 0.57, l: 0.46 };   // el azul principal de ControlDoc (#337ab7): el color elegido toma su lugar
+  const RAPIDOS = [['#2e7d32', 'Verde'], ['#00897b', 'Turquesa'], ['#6a1b9a', 'Morado'], ['#ef6c00', 'Naranja'], ['#d81b60', 'Rosa'], ['#455a64', 'Gris azulado']];
+  const INTERVALO_REVISION_MS = 1500;   // revisa hojas de estilo e iframes que aparezcan después
+
+  let gama = null;                      // clave activa; null = azul original
+  const contextos = [];                 // un contexto por documento (la página y sus iframes del mismo sitio)
+  let temporizador = null, ui = null, cerrarAlClicFuera = null;
+
+  // ───────── Color ─────────
+  function rgbAHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+    if (!d) return [0, 0, l];
+    const s = d / (1 - Math.abs(2 * l - 1));
+    let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+    return [h, s, l];
+  }
+  function hslARgb(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return [r, g, b].map(v => Math.round((v + m) * 255));
+  }
+  // Devuelve el rojo equivalente, o null si el color no es azul (grises, verdes, rojos… no se tocan).
+  function mapear(r, g, b) {
+    const [h, s, l] = rgbAHsl(r, g, b);
+    if (h < 180 || h > 262 || s < 0.22 || l < 0.05 || l > 0.995) return null;
+    const G = GAMAS[gama];
+    if (G.base) {   // color elegido: el azul principal pasa a ser ese color; los más claros/oscuros conservan su diferencia
+      const nuevoH = (G.base[0] + (h - 215) * 0.12 + 360) % 360;
+      return hslARgb(nuevoH, Math.min(1, G.base[1] * s / AZUL_BASE.s), Math.min(0.99, Math.max(0.03, G.base[2] + (l - AZUL_BASE.l))));
+    }
+    const nuevoH = (G.hue + (h - 215) * 0.12 + 360) % 360;   // un poco de variación entre celestes e índigos
+    return hslARgb(nuevoH, Math.min(1, s * G.sat), l);
+  }
+
+  // Colores con nombre que son azules (los demás nombres no se tocan).
+  const NOMBRES = {
+    blue: [0, 0, 255], mediumblue: [0, 0, 205], darkblue: [0, 0, 139], navy: [0, 0, 128], midnightblue: [25, 25, 112],
+    royalblue: [65, 105, 225], dodgerblue: [30, 144, 255], steelblue: [70, 130, 180], cornflowerblue: [100, 149, 237],
+    deepskyblue: [0, 191, 255], skyblue: [135, 206, 235], lightskyblue: [135, 206, 250], lightblue: [173, 216, 230],
+    powderblue: [176, 224, 230], aliceblue: [240, 248, 255], lightsteelblue: [176, 196, 222], cadetblue: [95, 158, 160],
+    slateblue: [106, 90, 205], darkslateblue: [72, 61, 139], mediumslateblue: [123, 104, 238], cyan: [0, 255, 255],
+    aqua: [0, 255, 255], darkcyan: [0, 139, 139], darkslategray: [47, 79, 79], darkslategrey: [47, 79, 79],
+  };
+  const PROP_DE_COLOR = /color|background|border|outline|shadow|fill|stroke|caret|column-rule|text-decoration/;
+  // url(...) se deja intacto (puede traer "#" de SVG); el resto: #hex, rgb()/rgba() y nombres de color.
+  const RE_COLOR = new RegExp('url\\([^)]*\\)|#([0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\\b|rgba?\\(\\s*(\\d+(?:\\.\\d+)?)\\s*[, ]\\s*(\\d+(?:\\.\\d+)?)\\s*[, ]\\s*(\\d+(?:\\.\\d+)?)\\s*(?:[,/]\\s*([\\d.]+%?))?\\s*\\)|\\b(' + Object.keys(NOMBRES).join('|') + ')\\b', 'gi');
+  const h2 = (n) => n.toString(16).padStart(2, '0');
+  function recolorTexto(valor, nombrePropiedad) {
+    const esColor = PROP_DE_COLOR.test(nombrePropiedad || 'color');
+    return valor.replace(RE_COLOR, (m, hex, r, g, b, a, nombre) => {
+      if (m.charAt(0) === 'u' || m.charAt(0) === 'U') return m;
+      if (nombre) {
+        if (!esColor) return m;
+        const nuevo = mapear(...NOMBRES[nombre.toLowerCase()]);
+        return nuevo ? `rgb(${nuevo.join(', ')})` : m;
+      }
+      if (hex) {
+        let t = hex.length <= 4 ? hex.split('').map(c => c + c).join('') : hex;
+        const nuevo = mapear(parseInt(t.slice(0, 2), 16), parseInt(t.slice(2, 4), 16), parseInt(t.slice(4, 6), 16));
+        return nuevo ? '#' + nuevo.map(h2).join('') + t.slice(6) : m;
+      }
+      const nuevo = mapear(Math.round(+r), Math.round(+g), Math.round(+b));
+      if (!nuevo) return m;
+      return a === undefined ? `rgb(${nuevo.join(', ')})` : `rgba(${nuevo.join(', ')}, ${a})`;
+    });
+  }
+
+  // Declaraciones de un estilo (regla o atributo style) que contienen azul → [[nombre, valorNuevo, prioridad, valorOriginal]]
+  function cambiosDe(estilo) {
+    const cambios = [];
+    for (let i = 0; i < estilo.length; i++) {
+      const nombre = estilo[i], valor = estilo.getPropertyValue(nombre);
+      if (!valor) continue;
+      const nuevo = recolorTexto(valor, nombre);
+      if (nuevo !== valor) cambios.push([nombre, nuevo, estilo.getPropertyPriority(nombre), valor]);
+    }
+    return cambios;
+  }
+
+  // ───────── Hojas de estilo: se modifican las reglas en su sitio (así no cambia el orden de la cascada) ─────────
+  function recolorEstilo(ctx, estilo) {
+    const cambios = cambiosDe(estilo);
+    if (!cambios.length) return;
+    let vistos = ctx.vistos.get(estilo);
+    if (!vistos) ctx.vistos.set(estilo, vistos = new Set());
+    for (const [nombre, nuevo, prio, original] of cambios) {
+      if (!vistos.has(nombre)) { vistos.add(nombre); ctx.originales.push([estilo, nombre, original, prio]); }
+      estilo.setProperty(nombre, nuevo, prio);
+    }
+  }
+  function procesarReglas(ctx, reglas) {
+    for (const regla of reglas) {
+      try {
+        if (regla.style) recolorEstilo(ctx, regla.style);
+        if (regla.styleSheet) procesarHoja(ctx, regla.styleSheet);   // @import
+        if (regla.cssRules) procesarReglas(ctx, regla.cssRules);     // @media, @supports, @keyframes…
+      } catch (e) { /* regla que el navegador no deja tocar */ }
+    }
+  }
+  function procesarHoja(ctx, hoja) {
+    let reglas; try { reglas = hoja.cssRules; } catch (e) { return; }   // hoja de otro dominio
+    if (ctx.largos.get(hoja) === reglas.length) return;                  // sin cambios desde la última vez
+    ctx.largos.set(hoja, reglas.length);
+    procesarReglas(ctx, reglas);
+  }
+  function procesarHojas(ctx) {
+    const doc = ctx.doc;
+    for (const hoja of doc.styleSheets) procesarHoja(ctx, hoja);
+    for (const hoja of (doc.adoptedStyleSheets || [])) procesarHoja(ctx, hoja);
+  }
+
+  // ───────── Estilos en línea (style="…") ─────────
+  const RE_RAPIDO = new RegExp('#[0-9a-f]{3,8}\\b|rgba?\\(|\\b(' + Object.keys(NOMBRES).join('|') + ')\\b', 'i');
+  function procesarInline(el) {
+    if (!el.getAttribute || el.closest('[data-cd-tema-ignorar]')) return;
+    const attr = el.getAttribute('style');
+    if (!attr || !RE_RAPIDO.test(attr)) return;
+    const cambios = cambiosDe(el.style);
+    if (!cambios.length) return;
+    el.setAttribute('data-cd-orig-style', attr);   // para poder volver al azul original
+    for (const [nombre, nuevo, prio] of cambios) el.style.setProperty(nombre, nuevo, prio);
+  }
+  function procesarNodo(nodo) {
+    if (nodo.nodeType !== 1) return;
+    procesarInline(nodo);
+    nodo.querySelectorAll('[style]').forEach(procesarInline);
+  }
+
+  // ───────── Un contexto por documento ─────────
+  function crearContexto(doc) {
+    const ctx = { doc, largos: new WeakMap(), vistos: new WeakMap(), originales: [], pendientes: new Set(), pausado: false, espera: null, obs: null };
+    ctx.obs = new MutationObserver((muts) => {
+      if (ctx.pausado) return;
+      for (const m of muts) {
+        if (m.type === 'attributes') ctx.pendientes.add(m.target);
+        else m.addedNodes.forEach(n => { if (n.nodeType === 1) ctx.pendientes.add(n); });
+      }
+      if (!ctx.espera) ctx.espera = setTimeout(() => {
+        ctx.espera = null;
+        if (!gama) return;
+        const lote = [...ctx.pendientes]; ctx.pendientes.clear();
+        lote.forEach(procesarNodo);
+        procesarHojas(ctx);
+        ctx.obs.takeRecords();   // descarta los cambios que acabamos de hacer nosotros
+      }, 60);
+    });
+    ctx.obs.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+    return ctx;
+  }
+  function aplicarEnContexto(ctx) {
+    ctx.pausado = true;
+    procesarHojas(ctx);
+    procesarNodo(ctx.doc.documentElement);
+    ctx.obs.takeRecords();
+    ctx.pausado = false;
+  }
+  function revertirContexto(ctx) {
+    ctx.pausado = true;
+    for (const [estilo, nombre, valor, prio] of ctx.originales) { try { estilo.setProperty(nombre, valor, prio); } catch (e) { /* hoja ya eliminada */ } }
+    ctx.originales = []; ctx.vistos = new WeakMap(); ctx.largos = new WeakMap();
+    ctx.doc.querySelectorAll('[data-cd-orig-style]').forEach(el => { el.setAttribute('style', el.getAttribute('data-cd-orig-style')); el.removeAttribute('data-cd-orig-style'); });
+    ctx.pendientes.clear(); ctx.obs.takeRecords();
+    ctx.pausado = false;
+  }
+
+  // Revisión periódica: hojas que se agregan tarde (Kendo, DevExtreme…) e iframes del mismo sitio.
+  function descubrirContextos(docRaiz) {
+    if (!contextos.some(c => c.doc === docRaiz)) contextos.push(crearContexto(docRaiz));
+    docRaiz.querySelectorAll('iframe, frame').forEach(f => {
+      let d = null; try { d = f.contentDocument; } catch (e) { return; }   // otro dominio
+      if (d && d.documentElement && d.readyState !== 'loading' && !contextos.some(c => c.doc === d)) {
+        const ctx = crearContexto(d); contextos.push(ctx);
+        if (gama) aplicarEnContexto(ctx);
+      }
+    });
+  }
+  function revisar() {
+    for (let i = contextos.length - 1; i >= 0; i--) {
+      if (!contextos[i].doc.defaultView) { contextos[i].obs.disconnect(); contextos.splice(i, 1); }   // iframe cerrado
+    }
+    descubrirContextos(document);
+    if (gama) contextos.forEach(c => { c.pausado = true; procesarHojas(c); c.pausado = false; c.obs.takeRecords(); });
+  }
+
+  // ───────── API ─────────
+  function guardarGama(clave) { try { localStorage.setItem(CLAVE_LS, clave || ''); } catch (e) { /* sin almacenamiento */ } }
+  function leerGama() { try { const v = localStorage.getItem(CLAVE_LS); return v === '' ? null : (GAMAS[v] || /^#[0-9a-f]{6}$/i.test(v || '') ? v : GAMA_INICIAL); } catch (e) { return GAMA_INICIAL; } }
+
+  function quitar(recordar = true) {
+    contextos.forEach(revertirContexto);
+    gama = null; if (recordar) guardarGama(null); pintarUI();
+  }
+  // Acepta una gama ('vino'…) o un color '#rrggbb' cualquiera.
+  function aplicar(clave) {
+    let guardar = clave;
+    if (/^#[0-9a-f]{6}$/i.test(clave)) {
+      const [h, s, l] = rgbAHsl(parseInt(clave.slice(1, 3), 16), parseInt(clave.slice(3, 5), 16), parseInt(clave.slice(5, 7), 16));
+      GAMAS.personalizado = { nombre: 'Personalizado', base: [h, s, Math.min(0.62, Math.max(0.22, l))], hex: clave.toLowerCase() };   // tonos muy claros u oscuros se acercan al medio para que el texto se lea
+      clave = 'personalizado'; guardar = GAMAS.personalizado.hex;
+    }
+    if (!GAMAS[clave]) throw new Error('Gama desconocida: ' + clave + ' (usa: ' + Object.keys(GAMAS).join(', ') + ' o un color #rrggbb)');
+    if (gama) contextos.forEach(revertirContexto);   // volver al original antes de cambiar de color
+    gama = clave; guardarGama(guardar);
+    descubrirContextos(document);
+    contextos.forEach(aplicarEnContexto);
+    pintarUI();
+  }
+  function destruir() {
+    quitar(false);
+    contextos.forEach(c => c.obs.disconnect()); contextos.length = 0;
+    clearInterval(temporizador); temporizador = null;
+    if (ui) ui.remove(); ui = null;
+    if (cerrarAlClicFuera) document.removeEventListener('mousedown', cerrarAlClicFuera, true);
+    delete window.CD_TEMA;
+  }
+
+  // ───────── Botón 🎨 ─────────
+  function pintarUI() {
+    if (!ui) return;
+    ui.querySelectorAll('[data-gama]').forEach(b => { b.style.outline = b.dataset.gama === gama ? '2px solid #111827' : 'none'; });
+    ui.querySelectorAll('[data-rapido]').forEach(b => { b.style.outline = gama === 'personalizado' && GAMAS.personalizado.hex === b.dataset.rapido ? '2px solid #111827' : 'none'; });
+    if (gama === 'personalizado') { const c = ui.querySelector('[data-color]'); c.value = GAMAS.personalizado.hex; ui.querySelector('[data-hex]').textContent = GAMAS.personalizado.hex; }
+    const q = ui.querySelector('[data-quitar]'); if (q) q.style.outline = gama ? 'none' : '2px solid #111827';
+  }
+  function crearUI() {
+    ui = document.createElement('div');
+    ui.id = 'CD_TEMA_UI'; ui.setAttribute('data-cd-tema-ignorar', '');
+    ui.style.cssText = 'position:fixed; left:10px; bottom:10px; z-index:2147483000; font-family:sans-serif;';
+    ui.innerHTML = `
+      <div data-menu style="display:none; background:#fff; border:1px solid #d1d5db; border-radius:10px; padding:8px; margin-bottom:6px; box-shadow:0 4px 14px rgba(0,0,0,.25); width:190px;">
+        <div style="font-size:11px; font-weight:bold; color:#374151; margin-bottom:6px;">🎨 Gama de rojos</div>
+        ${Object.entries(GAMAS).map(([k, g]) => `
+          <button data-gama="${k}" title="${g.nombre}" style="display:flex; align-items:center; gap:6px; width:100%; margin-bottom:4px; padding:4px 6px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; cursor:pointer; font-size:12px; color:#111827;">
+            <span style="display:inline-flex;">${g.muestra.map(c => `<span style="width:14px; height:14px; background:${c}; display:inline-block;"></span>`).join('')}</span>${g.nombre}
+          </button>`).join('')}
+        <div style="font-size:11px; font-weight:bold; color:#374151; margin:8px 0 5px;">Otros colores</div>
+        <div style="display:flex; gap:5px; margin-bottom:7px;">
+          ${RAPIDOS.map(([c, n]) => `<button data-rapido="${c}" title="${n}" style="width:22px; height:22px; border-radius:50%; border:1px solid #d1d5db; background:${c}; cursor:pointer; padding:0;"></button>`).join('')}
+        </div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#374151; margin-bottom:8px; cursor:pointer;">
+          <input type="color" data-color value="#2e7d32" title="Elegir cualquier color" style="width:40px; height:28px; padding:0; border:1px solid #d1d5db; border-radius:6px; background:#fff; cursor:pointer;">
+          <span>Elegir color <b data-hex style="color:#6b7280; font-weight:normal;">#2e7d32</b></span>
+        </label>
+        <button data-quitar title="Volver al azul original" style="width:100%; padding:4px 6px; border:1px solid #e5e7eb; border-radius:6px; background:#f3f4f6; cursor:pointer; font-size:12px; color:#374151;">Azul original</button>
+      </div>
+      <button data-abrir title="Tema rojo" style="width:34px; height:34px; border-radius:50%; border:1px solid #d1d5db; background:#fff; cursor:pointer; font-size:16px; box-shadow:0 2px 8px rgba(0,0,0,.25);">🎨</button>`;
+    document.body.appendChild(ui);
+    const menu = ui.querySelector('[data-menu]');
+    ui.querySelector('[data-abrir]').onclick = () => { menu.style.display = menu.style.display === 'none' ? 'block' : 'none'; };
+    ui.querySelectorAll('[data-gama]').forEach(b => { b.onclick = () => aplicar(b.dataset.gama); });
+    ui.querySelectorAll('[data-rapido]').forEach(b => { b.onclick = () => aplicar(b.dataset.rapido); });
+    const selector = ui.querySelector('[data-color]'); let espera = null;
+    selector.oninput = () => { ui.querySelector('[data-hex]').textContent = selector.value; clearTimeout(espera); espera = setTimeout(() => aplicar(selector.value), 250); };   // se ve en vivo mientras arrastras
+    selector.onchange = () => { clearTimeout(espera); aplicar(selector.value); };
+    ui.querySelector('[data-quitar]').onclick = () => quitar(true);
+    document.addEventListener('mousedown', cerrarAlClicFuera = (e) => { if (menu.style.display !== 'none' && !ui.contains(e.target)) menu.style.display = 'none'; }, true);
+  }
+
+  window.CD_TEMA = { aplicar, aplicarColor: aplicar, quitar: () => quitar(true), destruir, gamas: () => Object.keys(GAMAS), get gama() { return gama === 'personalizado' ? GAMAS.personalizado.hex : gama; } };
+  crearUI();
+  descubrirContextos(document);
+  const inicial = leerGama();
+  if (inicial) aplicar(inicial); else pintarUI();
+  temporizador = setInterval(revisar, INTERVALO_REVISION_MS);
+  console.log(`🎨 Tema de color ${gama ? 'activo (' + GAMAS[gama].nombre + (gama === 'personalizado' ? ' ' + GAMAS[gama].hex : '') + ')' : 'desactivado'}. Botón 🎨 abajo a la izquierda para cambiar el color o volver al azul.`);
+})();
+
+} catch (e) { console.warn('[Tema de color] no se pudo aplicar:', e); }
