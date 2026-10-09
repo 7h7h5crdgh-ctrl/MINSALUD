@@ -6772,6 +6772,40 @@ async function cd9Buscar() {
   }
 }
 
+// Dirección de Determinantes Sociales, Promoción y Prevención y sus 5 subdirecciones (catálogo de ControlDoc, IDs de oficina).
+// Los jefes se consultan en vivo: no hay nombres fijos en el script.
+const CD9_DDSPP = [
+  { id: 36,  nombre: 'DIRECCION DE DETERMINANTES SOCIALES, PROMOCION Y PREVENCION' },
+  { id: 41,  nombre: 'SUBDIRECCION DE ENFERMEDADES TRANSMISIBLES' },
+  { id: 45,  nombre: 'SUBDIRECCION DE ENFERMEDADES NO TRANSMISIBLES' },
+  { id: 49,  nombre: 'SUBDIRECCION DE SALUD AMBIENTAL Y CAMBIO CLIMATICO' },
+  { id: 53,  nombre: 'SUBDIRECCION DE NUTRICION, ALIMENTACION Y SOBERANIA' },
+  { id: 130, nombre: 'SUBDIRECCION DE PROMOCION DE LA SALUD' },
+];
+
+async function cd9ListarDDSPP() {
+  const estado = cd9Q('#PCD9_Estado'), cont = cd9Q('#PCD9_Resultados'), btn = cd9Q('#PCD9_DDSPP');
+  btn.disabled = true; estado.textContent = '⏳ Consultando los jefes de la Dirección y sus 5 subdirecciones…'; cont.innerHTML = ''; CD9_ULTIMO = [];
+  try {
+    await cd9CargarCatalogo();
+    // Se ubica cada dependencia por su ID de oficina; si no está, por nombre exacto (sin tildes).
+    const lista = CD9_DDSPP.map(d => (CD9_CAT.find(o => o.idOficina === d.id && cd3Normalizar(o.nombre).replace(/\s+/g, ' ').trim() === d.nombre)
+      || CD9_CAT.find(o => cd3Normalizar(o.nombre).replace(/\s+/g, ' ').trim() === d.nombre) || null));
+    await ejecutarConPool(lista.filter(Boolean), 3, async (o) => { try { await cd9JefesDe(o); } catch (e) { CD9_JEFES.set(cd9Clave(o), null); } });
+    let html = '', faltan = [], sinJefe = 0;
+    lista.forEach((o, i) => {
+      if (!o) { faltan.push(CD9_DDSPP[i].nombre); return; }
+      const j = CD9_JEFES.get(cd9Clave(o));
+      if (!j || !j.length) sinJefe++;
+      html += cd9HtmlDependencia(o, j);
+      CD9_ULTIMO.push([o.nombre, o.codigo, (j || []).map(x => x.nombre).join(' / ')]);
+    });
+    cont.innerHTML = html + (faltan.length ? `<div style="font-size:11px; color:#b45309;">⚠️ No encontré en el catálogo: ${cd8Esc(faltan.join('; '))}.</div>` : '');
+    estado.textContent = `🏛️ ${lista.filter(Boolean).length} dependencia(s) · ${sinJefe ? sinJefe + ' sin jefe registrado en ControlDoc · ' : ''}usa 📋 Copiar para llevar la lista a Excel.`;
+  } catch (e) { estado.textContent = '❌ ' + e.message; }
+  btn.disabled = false;
+}
+
 async function cd9CargarDirectorio() {
   const estado = cd9Q('#PCD9_Estado'), btn = cd9Q('#PCD9_Directorio');
   btn.disabled = true;
@@ -6799,6 +6833,7 @@ function cd9Cablear() {
   cd9Q('#PCD9_Buscar').onclick = cd9Buscar;
   cd9Q('#PCD9_Texto').addEventListener('keydown', e => { if (e.key === 'Enter') cd9Buscar(); });
   cd9Q('#PCD9_Directorio').onclick = cd9CargarDirectorio;
+  cd9Q('#PCD9_DDSPP').onclick = cd9ListarDDSPP;
   cd9Q('#PCD9_Copiar').onclick = () => { cdCopiarTexto(cd9TextoCopiable()); cd9Q('#PCD9_Estado').textContent = `📋 ${CD9_ULTIMO.length} fila(s) copiada(s).`; };
   cd9Q('#PCD9_Modo').onchange = () => { cd9Q('#PCD9_Cargo').style.display = ['todo', 'fun'].includes(cd9Q('#PCD9_Modo').value) ? '' : 'none'; };
   cont.addEventListener('click', async (e) => {
@@ -6845,6 +6880,7 @@ function cd9InyectarPestana() {
 <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:6px; font-size:11px;">
 <select id="PCD9_Modo" style="padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;"><option value="todo">Todo</option><option value="fun">Solo funcionarios</option><option value="dep">Solo dependencias</option><option value="jefes">Jefes por dependencia</option></select>
 <select id="PCD9_Cargo" style="padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;">${CD9_CARGOS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select>
+<button id="PCD9_DDSPP" title="Jefes de la Dirección de Determinantes Sociales, Promoción y Prevención y de sus 5 subdirecciones (Decreto 120 de 2026)" style="padding:3px 8px; border:1px solid #5eead4; background:#ccfbf1; border-radius:5px; cursor:pointer; font-size:11px; font-weight:bold;">🏛️ Dirección DSPP y subdirecciones</button>
 <button id="PCD9_Directorio" title="Consulta el jefe de cada dependencia (una vez)" style="padding:3px 8px; border:1px solid #5eead4; background:#f0fdfa; border-radius:5px; cursor:pointer; font-size:11px;">📚 Directorio de jefaturas</button>
 <button id="PCD9_Copiar" style="padding:3px 8px; border:1px solid #ccc; background:#fff; border-radius:5px; cursor:pointer; font-size:11px;">📋 Copiar</button></div>
 <div id="PCD9_Estado" style="font-size:11px; color:#4b5563; margin-bottom:4px;"></div>
