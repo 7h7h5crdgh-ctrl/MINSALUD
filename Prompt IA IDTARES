@@ -17,10 +17,11 @@ TIPO DE DOCUMENTO
 - Si el formato no corresponde al destinatario, indícalo en la columna Acción. Por ejemplo: un oficio dirigido a un funcionario del Ministerio, o un memorando cuyo destinatario real es una entidad externa.
 
 VERIFICACIONES PARA DEFINIR LA ACCIÓN
-1. Firma:
-   - Debe tener el marcador F1RM4NT3.
-   - Debe tener el nombre y el cargo reales del firmante, no textos de plantilla como "Nombre del remitente" o "Nombre del cargo".
-   - El cargo debe estar completo y escrito correctamente.
+1. Marca de firma:
+   - Busca en el texto del PDF el marcador exacto F1RM4NT3.
+   - Si existe, la columna Firma muestra 🟢.
+   - Si no existe, la columna Firma muestra 🔴 y en la columna Acción se indica "falta el marcador de firma (F1RM4NT3)".
+   - Aunque el marcador exista, verifica que el nombre y el cargo del firmante sean reales, no textos de plantilla como "Nombre del remitente" o "Nombre del cargo", y que el cargo esté completo y bien escrito. Si hay un error en esto, indícalo en la columna Acción.
 2. Códigos de radicación: los marcadores R3DkODE-39 y R4D1C4D0_1/2/3 deben estar completos. Por ejemplo, "3DkODE-39" está incompleto.
 3. Fecha: no debe tener una fecha fija desactualizada. La fecha la asigna el sistema al radicar.
 4. Dependencias: solo se aceptan denominaciones vigentes del Decreto 120 de 2026. No se aceptan nombres antiguos como "Dirección de Promoción y Prevención" o "Dirección de Prestación de Servicios y Atención Primaria".
@@ -33,9 +34,10 @@ VERIFICACIONES PARA DEFINIR LA ACCIÓN
 FORMATO DE SALIDA
 Responde ÚNICAMENTE con una tabla en Markdown. Lleva una fila por tarea, en el mismo orden del Excel, con estas columnas exactas:
 
-| IDT | Asunto | Acción | Resumen |
+| IDT | Firma | Asunto | Acción | Resumen |
 
 - IDT: el ID Tarea de ControlDoc.
+- Firma: 🟢 si el documento tiene el marcador F1RM4NT3, 🔴 si no lo tiene.
 - Asunto: el asunto del Excel, abreviado si es muy largo pero sin perder los números de radicado ni los nombres clave.
 - Acción: escoge una de estas opciones:
   - "Revisar y aprobar para firma." si no hay observaciones.
@@ -46,5 +48,5 @@ Responde ÚNICAMENTE con una tabla en Markdown. Lleva una fila por tarea, en el 
 
 REGLAS
 - No hagas preguntas ni agregues texto antes o después de la tabla.
-- Si una tarea del Excel no tiene PDF en el ZIP, inclúyela con la acción "Sin documento en el ZIP: verificar en ControlDoc".
+- Si una tarea del Excel no tiene PDF en el ZIP, inclúyela con 🔴 en la columna Firma y con la acción "Sin documento en el ZIP: verificar en ControlDoc".
 - Asume que la instrucción de ControlDoc es "REVISAR", salvo que el Excel indique otra. En ese caso, refléjala en la columna Acción.
