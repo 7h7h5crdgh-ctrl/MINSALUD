@@ -5452,6 +5452,7 @@ function cd3CambiarTab(clave) {
   if (clave === 'tareas') cd4PrepararCuentaPorDefecto();
   // El seguimiento carga tablero y listas la primera vez que se entra (después, con 🔄 Actualizar).
   if (clave === 'seguimiento' && !CD7_YA_CARGO) { CD7_YA_CARGO = true; cd7CargarTodo(); }
+  if (clave === 'global' && !CD9_ESTR && !CD9_CARGANDO_ESTR) { CD9_CARGANDO_ESTR = true; cd9RenderEstructura().finally(() => { CD9_CARGANDO_ESTR = false; }); }
 }
 
 function cd3CrearPanel() {
@@ -6806,6 +6807,218 @@ async function cd9ListarDDSPP() {
   btn.disabled = false;
 }
 
+// ── 🏛️ Estructura de la Dirección DSPP (vista predeterminada) + pendientes por jefatura ──
+// Subdirecciones → funcionarios → grupos (jefe y funcionarios de cada grupo). Los grupos se ubican por el código del catálogo
+// (211x pertenece a la subdirección 2110, 212x a la 2120…; 2101–2104 son grupos de la propia Dirección).
+// "Pendientes" = tareas sin tramitar de cada funcionario: 🔎 Por revisar + ✍️ Por aprobar (las mismas listas del tablero).
+let CD9_ESTR = null;                 // { dir:{o,func,grupos[]}, subs:[{o,func,grupos[]}] }
+const CD9_PEND = new Map();          // idFuncionario → { rev, apr } (número o null si no se pudo consultar)
+const CD9_FUNC = new Map();          // 'unidad-oficina' → funcionarios activos
+let CD9_CONTANDO = false;
+let CD9_CARGANDO_ESTR = false;
+
+async function cd9FuncionariosDe(o) {
+  const k = cd9Clave(o);
+  if (CD9_FUNC.has(k)) return CD9_FUNC.get(k);
+  const data = await cd3ConsultarFuncionarios({ IDUNIDADADMINISTRATIVA: o.idUnidad, IDOFICINAPRODUCTORA: o.idOficina, IDCARGO: '', NOMBRES: '', APELLIDOS: '' });
+  const vistos = new Set();
+  const lista = (data || []).filter(f => f && f.IDFUNCIONARIO && Number(f.IDCARGO) !== 5 && String(f.ESTADO || 'SI').toUpperCase() !== 'NO')
+    .map(f => ({ ...cd3ResumirFuncionario(f), idCargo: Number(f.IDCARGO) || 0 }))
+    .filter(f => f.idFuncionario && !vistos.has(f.idFuncionario) && vistos.add(f.idFuncionario))
+    .sort((a, b) => (b.idCargo === 2) - (a.idCargo === 2) || a.nombre.localeCompare(b.nombre, 'es'));
+  CD9_FUNC.set(k, lista);
+  return lista;
+}
+
+// Organigrama (Decreto 120 de 2026), por ID de oficina del catálogo. Los grupos sin ID se buscan por palabras clave
+// del nombre; si ControlDoc aún no los tiene creados se muestran como "no está en el catálogo".
+const CD9_ORGANIGRAMA = {
+  130: [{ id: 37 }, { id: 38 }, { id: 40 }],                                    // Promoción de la Salud: Curso de Vida · Sexualidad y DSDR · Gestión para la Promoción y la Prevención
+  41:  [{ id: 44 }, { id: 42 }, { id: 152 }],                                   // Enf. Transmisibles: Endemoepidémicas · Inmunoprevenibles · Infecciosas desatendidas y emergentes/reemergentes
+  45:  [{ id: 55 },                                                             // Enf. No Transmisibles: Calidad e Inocuidad de Alimentos (así figura en el organigrama)
+        { claves: ['CARDIOVASCULAR'], nombre: 'Grupo Gestión Integrada de la Salud Cardiovascular y Otras Condiciones Crónicas' },
+        { claves: ['CANCER'], nombre: 'Grupo Gestión Integrada de Cáncer y de las Enfermedades Huérfanas, Raras y Autoinmunes' }],
+  49:  [{ id: 51 }, { id: 52 }, { id: 50 }],                                    // Salud Ambiental: Territorial y Vigilancia Sanitaria · Cambio Climático · Política
+  53:  [{ id: 54 }],                                                            // Nutrición: Alimentación, Nutrición y Soberanía
+};
+function cd9GruposDe(sub) {
+  return (CD9_ORGANIGRAMA[sub.idOficina] || []).map(g => {
+    const o = (g.id != null ? CD9_CAT.find(x => x.idOficina === g.id) : null)
+      || (g.claves ? CD9_CAT.find(x => g.claves.every(k => cd3Normalizar(x.nombre).includes(k)) && !/^\d{4}0$/.test(x.codigo) && x.idOficina !== sub.idOficina) : null);
+    return o ? { o } : { falta: g.nombre || ('ID ' + g.id) };
+  });
+}
+
+async function cd9CargarEstructura() {
+  await cd9CargarCatalogo();
+  const buscar = (id) => CD9_CAT.find(o => o.idOficina === id) || null;
+  const dir = buscar(36); const subs = [41, 45, 49, 53, 130].map(buscar).filter(Boolean);
+  if (!dir || !subs.length) throw new Error('No encontré la Dirección o las subdirecciones en el catálogo de ControlDoc');
+  const bloques = [{ o: dir, grupos: [] }, ...subs.map(s => ({ o: s, grupos: cd9GruposDe(s) }))];
+  const todas = bloques.flatMap(b => [b, ...b.grupos.filter(g => g.o)]);
+  await ejecutarConPool(todas, 4, async (b) => { try { b.func = await cd9FuncionariosDe(b.o); } catch (e) { b.func = null; } });
+  CD9_ESTR = { dir: bloques[0], subs: bloques.slice(1) };
+  return CD9_ESTR;
+}
+
+function cd9IdsDe(...bloques) {
+  const ids = new Set();
+  bloques.flat().forEach(b => (b && b.func || []).forEach(f => ids.add(f.idFuncionario)));
+  return ids;
+}
+function cd9SumaPend(ids) {
+  let rev = 0, apr = 0, sinDato = 0, consultados = 0;
+  ids.forEach(id => { const p = CD9_PEND.get(id); if (!p) return; if (p.rev == null && p.apr == null) { sinDato++; return; } consultados++; rev += p.rev || 0; apr += p.apr || 0; });
+  return { rev, apr, total: rev + apr, sinDato, consultados, n: ids.size };
+}
+function cd9InsigniaTotal(s, titulo) {
+  if (!s.consultados && !s.sinDato) return '';
+  return `<span title="${cd8Esc(titulo || 'Por revisar + Por aprobar')}" style="background:#fee2e2; color:#991b1b; border-radius:10px; padding:1px 8px; font-size:10.5px; font-weight:bold; white-space:nowrap;">📬 ${s.total}</span>`
+    + `<span style="font-size:10px; color:#6b7280; white-space:nowrap;"> 🔎${s.rev} ✍️${s.apr}${s.sinDato ? ` · ${s.sinDato} sin acceso` : ''}</span>`;
+}
+
+// Alcance del conteo. ids = IDs de oficina marcados (Despacho, subdirecciones y grupos); roles = a quién se lee en cada nivel.
+const CD9_SEL = { ids: null, roles: { subJefe: true, subFunc: true, grpJefe: true, grpFunc: true } };
+function cd9TodosBloques() {
+  const E = CD9_ESTR; if (!E) return [];
+  return [E.dir, ...E.subs.flatMap(s => [s, ...s.grupos.filter(g => g.o)])];
+}
+function cd9AsegurarSel() {
+  if (!CD9_SEL.ids) CD9_SEL.ids = new Set(cd9TodosBloques().map(b => b.o.idOficina));
+}
+function cd9EnAlcance(f, b, esGrupo) {
+  cd9AsegurarSel();
+  if (!b.o || !CD9_SEL.ids.has(b.o.idOficina)) return false;
+  const jefe = f.idCargo === 2;
+  return !!CD9_SEL.roles[(esGrupo ? 'grp' : 'sub') + (jefe ? 'Jefe' : 'Func')];
+}
+// IDs de funcionario dentro del alcance (sin repetir). subs: bloques de dirección/subdirección; grupos: bloques de grupo.
+function cd9IdsAlcance(subs, grupos) {
+  const ids = new Set();
+  (subs || []).forEach(b => (b.func || []).forEach(f => { if (cd9EnAlcance(f, b, false)) ids.add(f.idFuncionario); }));
+  (grupos || []).forEach(b => (b && b.o ? (b.func || []) : []).forEach(f => { if (cd9EnAlcance(f, b, true)) ids.add(f.idFuncionario); }));
+  return ids;
+}
+function cd9BarraAlcance() {
+  const r = CD9_SEL.roles;
+  const caja = (k, txt) => `<label style="cursor:pointer; white-space:nowrap;"><input type="checkbox" class="cd9-rol" data-rol="${k}" ${r[k] ? 'checked' : ''}> ${txt}</label>`;
+  const btn = (a, txt) => `<button class="cd9-acc" data-acc="${a}" style="padding:1px 7px; font-size:10px; border:1px solid #99f6e4; background:#fff; border-radius:5px; cursor:pointer;">${txt}</button>`;
+  return `<div style="border:1px solid #99f6e4; background:#fff; border-radius:8px; padding:5px 8px; margin-bottom:6px; font-size:11px;">
+    <b>🎯 Alcance del conteo</b> <span style="color:#6b7280;">(marca las casillas ☑ de cada subdirección, grupo o del Despacho)</span>
+    <div style="display:flex; flex-wrap:wrap; gap:4px 12px; margin:4px 0;">${caja('subJefe', '👔 Jefe de subdirección')}${caja('subFunc', '👥 Funcionarios de subdirección')}${caja('grpJefe', '👔 Jefes de grupo')}${caja('grpFunc', '👥 Funcionarios de grupo')}</div>
+    <div style="display:flex; gap:4px; flex-wrap:wrap;">${btn('alc-todo', '☑ Todo')}${btn('alc-nada', '☐ Nada')}${btn('alc-jefes', '👔 Solo jefes')}</div></div>`;
+}
+function cd9CasillaBloque(b, cascada) {
+  cd9AsegurarSel();
+  return `<input type="checkbox" class="cd9-sel" data-b="${b.o.idOficina}" ${cascada ? 'data-cascada="1"' : ''} ${CD9_SEL.ids.has(b.o.idOficina) ? 'checked' : ''} title="Incluir en el conteo" style="margin-right:4px; vertical-align:middle;">`;
+}
+function cd9Repintar() {
+  const cont = cd9Q('#PCD9_Resultados'); if (!cont || !CD9_ESTR) return;
+  const abiertos = [...cont.querySelectorAll('details')].map(d => d.open);
+  cont.innerHTML = cd9HtmlEstructura();
+  cont.querySelectorAll('details').forEach((d, i) => { if (abiertos[i] != null) d.open = abiertos[i]; });
+  CD9_ESTR.subs.forEach(s => {
+    const c = cont.querySelector(`.cd9-sel[data-b="${s.o.idOficina}"]`); if (!c) return;
+    const hijos = s.grupos.filter(g => g.o).map(g => g.o.idOficina), marc = hijos.filter(id => CD9_SEL.ids.has(id)).length;
+    c.indeterminate = (CD9_SEL.ids.has(s.o.idOficina) ? hijos.length - marc : marc) > 0 && !(CD9_SEL.ids.has(s.o.idOficina) && marc === hijos.length) && !( !CD9_SEL.ids.has(s.o.idOficina) && marc === 0);
+  });
+  CD9_ULTIMO = cd9FilasEstructura();
+}
+
+function cd9FilaFunc(f, enAlc = true) {
+  const p = CD9_PEND.get(f.idFuncionario);
+  const pend = p ? ((p.rev == null && p.apr == null) ? '<span title="No se pudo consultar su bandeja" style="color:#9ca3af; font-size:10px;">sin acceso</span>'
+    : `<span style="font-size:10.5px; white-space:nowrap;"><b style="color:${(p.rev || 0) + (p.apr || 0) ? '#991b1b' : '#6b7280'};">📬 ${(p.rev || 0) + (p.apr || 0)}</b> <span style="color:#6b7280;">🔎${p.rev ?? '?'} ✍️${p.apr ?? '?'}</span></span>`) : '';
+  return `<div style="display:flex; justify-content:space-between; align-items:center; gap:4px; padding:1px 0; font-size:11px; opacity:${enAlc ? 1 : 0.4};" title="${enAlc ? '' : 'Fuera del alcance del conteo'}">
+    <span>${cd8Esc(f.nombre)} ${cd9ChipCargo(f.cargo)}</span>
+    <span style="display:flex; align-items:center; gap:5px;">${pend}
+      <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(f.nombre)}" title="Copiar nombre" style="border:none; background:none; cursor:pointer; font-size:11px;">📋</button>
+      <button class="cd9-acc" data-acc="tareas" data-id="${f.idFuncionario}" data-n="${cd8Esc(f.nombre)}" title="Ver sus tareas en Seguimiento" style="border:none; background:none; cursor:pointer; font-size:11px;">🧭</button></span></div>`;
+}
+
+function cd9JefesTexto(b) {
+  const j = (b.func || []).filter(f => f.idCargo === 2);
+  return j.length ? j.map(x => `<b>${cd8Esc(x.nombre)}</b>`).join(' · ') : '<span style="color:#9ca3af;">sin jefe registrado</span>';
+}
+
+function cd9HtmlGrupo(g) {
+  if (g.falta) return `<div style="margin:4px 0 4px 10px; border-left:3px solid #fcd34d; padding-left:7px; font-size:11px; color:#92400e;">👥 ${cd8Esc(g.falta)} <i>— figura en el organigrama, pero no está en el catálogo de ControlDoc (aún no creado o con otro nombre).</i></div>`;
+  const s = cd9SumaPend(cd9IdsAlcance([], [g]));
+  return `<details style="margin:4px 0 4px 10px; border-left:3px solid #5eead4; padding-left:7px;">
+    <summary style="cursor:pointer; font-size:11.5px;">${cd9CasillaBloque(g)}<b style="color:#115e59;">👥 ${cd8Esc(g.o.nombre)}</b> <span style="color:#6b7280; font-size:10px;">(${cd8Esc(g.o.codigo)})</span> ${cd9InsigniaTotal(s, 'Pendientes del grupo')}<br>
+      <span style="font-size:11px;">👔 ${g.func ? cd9JefesTexto(g) : '<span style="color:#b91c1c;">no se pudo consultar</span>'}</span></summary>
+    ${g.func ? g.func.map(f => cd9FilaFunc(f, cd9EnAlcance(f, g, true))).join('') || '<div style="font-size:11px; color:#9ca3af;">Sin funcionarios.</div>' : ''}</details>`;
+}
+
+function cd9HtmlEstructura() {
+  const E = CD9_ESTR; if (!E) return '';
+  const todosIds = cd9IdsAlcance([E.dir, ...E.subs], E.subs.flatMap(s => s.grupos));
+  const G = cd9SumaPend(todosIds);
+  let h = cd9BarraAlcance() + `<div style="background:#ecfdf5; border:1px solid #6ee7b7; border-radius:8px; padding:6px 9px; margin-bottom:6px; font-size:11.5px;">
+    <b>🏛️ Dirección de Determinantes Sociales, Promoción y Prevención</b> · ${todosIds.size} funcionario(s) en el alcance · ${E.subs.reduce((n, s) => n + s.grupos.filter(g => g.o).length, 0)} grupo(s) adscritos a las subdirecciones
+    ${G.consultados || G.sinDato ? `<div style="margin-top:3px;">Total sin tramitar del alcance (aprox.): <b style="color:#991b1b;">📬 ${G.total}</b> <span style="color:#6b7280;">🔎 ${G.rev} por revisar · ✍️ ${G.apr} por aprobar · ${G.consultados} bandeja(s) leída(s)${G.sinDato ? ` · ${G.sinDato} sin acceso` : ''}</span></div>`
+      : '<div style="margin-top:3px; color:#6b7280;">Pulsa <b>📊 Contar pendientes</b> para sumar los documentos sin tramitar por jefatura.</div>'}</div>`;
+  E.subs.forEach(s => {
+    const propios = cd9SumaPend(cd9IdsAlcance([s], [])), tot = cd9SumaPend(cd9IdsAlcance([s], s.grupos));
+    h += `<details open style="border:1px solid #99f6e4; background:#f0fdfa; border-radius:8px; padding:6px 9px; margin-bottom:7px;">
+      <summary style="cursor:pointer; font-size:12px;">${cd9CasillaBloque(s, true)}<b style="color:#115e59;">🏢 ${cd8Esc(s.o.nombre)}</b> <span style="color:#6b7280; font-size:10px;">(${cd8Esc(s.o.codigo)})</span> ${cd9InsigniaTotal(tot, 'Total de la jefatura (subdirección + sus grupos)')}<br>
+        <span style="font-size:11px;">👔 ${s.func ? cd9JefesTexto(s) : '<span style="color:#b91c1c;">no se pudo consultar</span>'}</span>
+        <button class="cd9-acc" data-acc="copiar" data-v="${cd8Esc(s.o.nombre)}" title="Copiar dependencia" style="border:none; background:none; cursor:pointer; font-size:11px;">📋</button></summary>
+      <div style="margin:4px 0 2px; font-size:10.5px; font-weight:bold; color:#374151;">Funcionarios de la subdirección ${propios.consultados ? `<span style="font-weight:normal; color:#6b7280;">· propios: 📬 ${propios.total}</span>` : ''}</div>
+      ${s.func ? s.func.map(f => cd9FilaFunc(f, cd9EnAlcance(f, s, false))).join('') || '<div style="font-size:11px; color:#9ca3af;">Sin funcionarios.</div>' : ''}
+      ${s.grupos.length ? `<div style="margin:6px 0 2px; font-size:10.5px; font-weight:bold; color:#374151;">Grupos (${s.grupos.length})</div>${s.grupos.map(cd9HtmlGrupo).join('')}` : '<div style="font-size:10.5px; color:#9ca3af; margin-top:4px;">Sin grupos en el catálogo.</div>'}
+    </details>`;
+  });
+  h = `<details style="border:1px dashed #99f6e4; border-radius:8px; padding:6px 9px; margin-bottom:7px;"><summary style="cursor:pointer; font-size:11.5px;">${cd9CasillaBloque(E.dir)}<b>🏛️ Despacho de la Dirección</b> ${cd9InsigniaTotal(cd9SumaPend(cd9IdsAlcance([E.dir], [])), 'Pendientes del equipo de la Dirección')}<br><span style="font-size:11px;">👔 ${E.dir.func ? cd9JefesTexto(E.dir) : ''}</span></summary>${(E.dir.func || []).map(f => cd9FilaFunc(f, cd9EnAlcance(f, E.dir, false))).join('') || '<div style="font-size:11px; color:#9ca3af;">Sin funcionarios.</div>'}</details>` + h;
+  return h;
+}
+
+function cd9FilasEstructura() {
+  const E = CD9_ESTR; if (!E) return [];
+  const filas = [['Nivel', 'Dependencia', 'Código', 'Jefe(s)', 'Funcionario', 'Cargo', 'Por revisar', 'Por aprobar', 'Total']];
+  const bloque = (b, nivel) => {
+    if (!b.o) return;
+    const jefes = (b.func || []).filter(f => f.idCargo === 2).map(f => f.nombre).join(' / ');
+    (b.func || []).filter(f => cd9EnAlcance(f, b, nivel === 'Grupo')).forEach(f => { const p = CD9_PEND.get(f.idFuncionario) || {}; filas.push([nivel, b.o.nombre, b.o.codigo, jefes, f.nombre, f.cargo, p.rev ?? '', p.apr ?? '', (p.rev == null && p.apr == null) ? '' : (p.rev || 0) + (p.apr || 0)]); });
+  };
+  bloque(E.dir, 'Dirección'); E.dir.grupos.forEach(g => bloque(g, 'Grupo de la Dirección'));
+  E.subs.forEach(s => { bloque(s, 'Subdirección'); s.grupos.forEach(g => bloque(g, 'Grupo')); });
+  return filas;
+}
+
+async function cd9RenderEstructura(forzar = false) {
+  const cont = cd9Q('#PCD9_Resultados'), estado = cd9Q('#PCD9_Estado');
+  if (!cont) return;
+  if (!CD9_ESTR || forzar) {
+    estado.textContent = '⏳ Cargando la estructura de la Dirección y sus subdirecciones…'; cont.innerHTML = '';
+    try { if (forzar) { CD9_FUNC.clear(); CD9_ESTR = null; } await cd9CargarEstructura(); } catch (e) { estado.textContent = '❌ ' + e.message; return; }
+  }
+  cd9Repintar();
+  const n = cd9IdsDe(CD9_ESTR.dir, ...CD9_ESTR.subs.map(s => [s, s.grupos])).size;
+  estado.textContent = `🏛️ Estructura DSPP: ${CD9_ESTR.subs.length} subdirecciones · ${n} funcionarios. Despliega cada subdirección o grupo.`;
+}
+
+async function cd9ContarPendientes() {
+  if (CD9_CONTANDO) return;
+  const estado = cd9Q('#PCD9_Estado'), btn = cd9Q('#PCD9_Pendientes');
+  if (!CD9_ESTR) await cd9RenderEstructura();
+  if (!CD9_ESTR) return;
+  const E = CD9_ESTR;
+  const ids = [...cd9IdsAlcance([E.dir, ...E.subs], E.subs.flatMap(s => s.grupos))];
+  if (!ids.length) { estado.textContent = '⚠️ No hay nadie en el alcance: marca al menos una dependencia y un tipo de funcionario.'; return; }
+  CD9_CONTANDO = true; btn.disabled = true; ids.forEach(id => CD9_PEND.delete(id));
+  let hechos = 0;
+  await ejecutarConPool(ids, 5, async (id) => {
+    const r = await Promise.allSettled([cd7ConsultarLista('revisar', id), cd7ConsultarLista('aprobar', id)]);
+    CD9_PEND.set(id, { rev: r[0].status === 'fulfilled' ? r[0].value.length : null, apr: r[1].status === 'fulfilled' ? r[1].value.length : null });
+    hechos++; estado.textContent = `⏳ Leyendo bandejas ${hechos}/${ids.length}…`;
+  }, () => {});
+  CD9_CONTANDO = false; btn.disabled = false;
+  cd9Repintar();
+  const G = cd9SumaPend(new Set(ids));
+  estado.textContent = `📊 Total aprox. sin tramitar: ${G.total} (🔎 ${G.rev} + ✍️ ${G.apr}) en ${G.consultados} bandeja(s)${G.sinDato ? ` · ${G.sinDato} sin acceso` : ''}. 📋 Copiar lleva el detalle a Excel.`;
+}
+
 async function cd9CargarDirectorio() {
   const estado = cd9Q('#PCD9_Estado'), btn = cd9Q('#PCD9_Directorio');
   btn.disabled = true;
@@ -6833,9 +7046,21 @@ function cd9Cablear() {
   cd9Q('#PCD9_Buscar').onclick = cd9Buscar;
   cd9Q('#PCD9_Texto').addEventListener('keydown', e => { if (e.key === 'Enter') cd9Buscar(); });
   cd9Q('#PCD9_Directorio').onclick = cd9CargarDirectorio;
-  cd9Q('#PCD9_DDSPP').onclick = cd9ListarDDSPP;
+  cd9Q('#PCD9_DDSPP').onclick = () => cd9RenderEstructura(true);
+  cd9Q('#PCD9_Pendientes').onclick = cd9ContarPendientes;
   cd9Q('#PCD9_Copiar').onclick = () => { cdCopiarTexto(cd9TextoCopiable()); cd9Q('#PCD9_Estado').textContent = `📋 ${CD9_ULTIMO.length} fila(s) copiada(s).`; };
   cd9Q('#PCD9_Modo').onchange = () => { cd9Q('#PCD9_Cargo').style.display = ['todo', 'fun'].includes(cd9Q('#PCD9_Modo').value) ? '' : 'none'; };
+  cont.addEventListener('change', (e) => {
+    const c = e.target;
+    if (c.classList.contains('cd9-rol')) { CD9_SEL.roles[c.dataset.rol] = c.checked; cd9Repintar(); return; }
+    if (c.classList.contains('cd9-sel')) {
+      cd9AsegurarSel();
+      const id = Number(c.dataset.b), sub = CD9_ESTR && CD9_ESTR.subs.find(s => s.o.idOficina === id);
+      const ids = [id, ...(c.dataset.cascada && sub ? sub.grupos.filter(g => g.o).map(g => g.o.idOficina) : [])];
+      ids.forEach(x => { if (c.checked) CD9_SEL.ids.add(x); else CD9_SEL.ids.delete(x); });
+      cd9Repintar();
+    }
+  });
   cont.addEventListener('click', async (e) => {
     const b = e.target.closest('.cd9-acc'); if (!b) return;
     const card = b.closest('.cd9-card');
@@ -6845,6 +7070,13 @@ function cd9Cablear() {
       cd3CambiarTab('seguimiento');
       try { await cd7CambiarCuenta({ idFuncionario: b.dataset.id, nombre: b.dataset.n }); } catch (err) { alert('No se pudieron cargar sus tareas: ' + err.message); }
       return;
+    }
+    if (acc === 'alc-todo' || acc === 'alc-nada' || acc === 'alc-jefes') {
+      cd9AsegurarSel();
+      CD9_SEL.ids = acc === 'alc-nada' ? new Set() : new Set(cd9TodosBloques().map(x => x.o.idOficina));
+      CD9_SEL.roles = acc === 'alc-jefes' ? { subJefe: true, subFunc: false, grpJefe: true, grpFunc: false } : { subJefe: true, subFunc: true, grpJefe: true, grpFunc: true };
+      if (acc === 'alc-nada') CD9_SEL.roles = { subJefe: true, subFunc: true, grpJefe: true, grpFunc: true };
+      cd9Repintar(); return;
     }
     const [u, of] = (b.dataset.k || '').split('-').map(Number);
     const o = cd9DependenciaDe(u, of) || { idUnidad: u, idOficina: of, nombre: '' };
@@ -6880,7 +7112,8 @@ function cd9InyectarPestana() {
 <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:6px; font-size:11px;">
 <select id="PCD9_Modo" style="padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;"><option value="todo">Todo</option><option value="fun">Solo funcionarios</option><option value="dep">Solo dependencias</option><option value="jefes">Jefes por dependencia</option></select>
 <select id="PCD9_Cargo" style="padding:3px; border:1px solid #ccc; border-radius:4px; font-size:11px;">${CD9_CARGOS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select>
-<button id="PCD9_DDSPP" title="Jefes de la Dirección de Determinantes Sociales, Promoción y Prevención y de sus 5 subdirecciones (Decreto 120 de 2026)" style="padding:3px 8px; border:1px solid #5eead4; background:#ccfbf1; border-radius:5px; cursor:pointer; font-size:11px; font-weight:bold;">🏛️ Dirección DSPP y subdirecciones</button>
+<button id="PCD9_DDSPP" title="Vista de la Dirección: subdirecciones, sus funcionarios y sus grupos (jefe y funcionarios)" style="padding:3px 8px; border:1px solid #5eead4; background:#ccfbf1; border-radius:5px; cursor:pointer; font-size:11px; font-weight:bold;">🏛️ Estructura DSPP</button>
+<button id="PCD9_Pendientes" title="Cuenta las tareas sin tramitar (por revisar + por aprobar) de cada funcionario y las suma por jefatura" style="padding:3px 8px; border:1px solid #fca5a5; background:#fee2e2; color:#991b1b; border-radius:5px; cursor:pointer; font-size:11px; font-weight:bold;">📊 Contar pendientes</button>
 <button id="PCD9_Directorio" title="Consulta el jefe de cada dependencia (una vez)" style="padding:3px 8px; border:1px solid #5eead4; background:#f0fdfa; border-radius:5px; cursor:pointer; font-size:11px;">📚 Directorio de jefaturas</button>
 <button id="PCD9_Copiar" style="padding:3px 8px; border:1px solid #ccc; background:#fff; border-radius:5px; cursor:pointer; font-size:11px;">📋 Copiar</button></div>
 <div id="PCD9_Estado" style="font-size:11px; color:#4b5563; margin-bottom:4px;"></div>
