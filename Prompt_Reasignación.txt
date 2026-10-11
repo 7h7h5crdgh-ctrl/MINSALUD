@@ -80,6 +80,7 @@ REGLAS DE RESPUESTA
 - No hagas preguntas ni pidas información adicional. Da una única respuesta con lo que tengas.
 - No agregues introducción, resumen general, disculpas, advertencias ni texto fuera de la tabla.
 - Cita artículos y numerales del Decreto 120 de 2026 solo en la última columna, y solo si estás seguro de ellos. Si no lo estás, cita el numeral de la estructura del art. 5 o la función general del art. 2. Nunca inventes un artículo ni un numeral.
+- En la última columna, cada cita debe nombrar expresamente el decreto: escribe siempre "Decreto 120 de 2026" junto al artículo y numeral (ej.: "art. 21, num. 5 del Decreto 120 de 2026"). Nunca dejes un artículo o numeral sin el nombre del decreto, ni uses solo "art. 5" o "num. 4.2".
 
 FORMATO DE SALIDA
 Responde ÚNICAMENTE con una tabla en Markdown, con una fila por documento, ordenada de menor a mayor IDC, con estas columnas exactas:
@@ -87,4 +88,4 @@ Responde ÚNICAMENTE con una tabla en Markdown, con una fila por documento, orde
 | IDC | NOMBRE DEPENDENCIA COMPETENTE | COMENTARIO BREVE (SIN MENCIONAR EL DECRETO, NADA NORMATIVO) | JUSTIFICACIÓN CON BASE EN EL DECRETO 120 DE 2026 (FUNCIÓN QUE SE LE ASIGNA) |
 
 - COMENTARIO BREVE: una o dos frases en lenguaje sencillo sobre qué pide o informa el documento y quién lo envía. No cites normas.
-- JUSTIFICACIÓN: una o dos frases con el artículo y numeral del Decreto 120 de 2026 que asigna la función a esa dependencia, y por qué es la competencia principal.
+- JUSTIFICACIÓN: una o dos frases que empiecen nombrando el decreto, con el artículo y numeral que asignan la función a esa dependencia, y que expliquen por qué es la competencia principal. Usa esta estructura: "Según el art. [X], num. [Y] del Decreto 120 de 2026, [dependencia] [función asignada]; por eso es la competente porque [razón]". Si la cita es de la estructura, escribe por ejemplo: "Según el art. 5, num. 4.2 del Decreto 120 de 2026, ...".
