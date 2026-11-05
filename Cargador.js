@@ -5,7 +5,7 @@
 // La clave se recuerda solo mientras la pestaña esté abierta (sessionStorage).
 // ════════════════════════════════════════════════════════════════
 (async () => {
-  const URL_SCRIPT = 'https://raw.githubusercontent.com/USUARIO/REPOSITORIO/main/script.enc.json';
+  const URL_SCRIPT = 'https://raw.githubusercontent.com/7h7h5crdgh-ctrl/MINSALUD/refs/heads/main/script.enc.json';
   const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
   let paquete;
   try {
