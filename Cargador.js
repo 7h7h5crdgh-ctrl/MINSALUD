@@ -1,57 +1,31 @@
 // ════════════════════════════════════════════════════════════════
-// CARGADOR — esto es lo único que se comparte y se pega en la consola.
-// Revisa el interruptor remoto, pide la contraseña, descarga el script
-// cifrado y lo descifra EN MEMORIA del navegador antes de ejecutarlo.
-// Cambia solo las 3 líneas marcadas con "👉" por tus URLs reales de GitHub.
+// Cargador del script cifrado de ControlDoc (pegar en la consola de ControlDoc o usar como marcador).
+// 1) Cambie URL_SCRIPT por la dirección "raw" de script.enc.json en su repositorio de GitHub.
+// 2) Al ejecutarlo pide la clave, descifra el script en el navegador y lo arranca.
+// La clave se recuerda solo mientras la pestaña esté abierta (sessionStorage).
 // ════════════════════════════════════════════════════════════════
 (async () => {
-  const URL_ESTADO = 'https://raw.githubusercontent.com/7h7h5crdgh-ctrl/ControlDoc/main/estado.json';   // 👉 interruptor
-  const URL_SCRIPT = 'https://raw.githubusercontent.com/7h7h5crdgh-ctrl/ControlDoc/main/script.enc.json'; // 👉 script cifrado
-  // El intervalo de revisión y esta URL ya NO se los pasamos al script (ver
-  // nota abajo): el propio script.js cifrado trae su copia fija de la URL y
-  // revisa cada 10 s por su cuenta. Esta consulta de aquí es solo un filtro
-  // rápido para no pedir la contraseña si ya se sabe que está desactivado.
-
-  const sinCache = (u) => u + (u.includes('?') ? '&' : '?') + 't=' + Date.now();
-  const d = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-
-  async function leerEstado() {
-    const r = await fetch(sinCache(URL_ESTADO), { cache: 'no-store' });
-    if (!r.ok) throw new Error('No se pudo consultar el interruptor (HTTP ' + r.status + ')');
-    return r.json();
-  }
-
-  async function descifrar(paquete, clave) {
-    const claveBase = await crypto.subtle.importKey('raw', new TextEncoder().encode(clave), 'PBKDF2', false, ['deriveKey']);
-    const claveAES = await crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt: d(paquete.salt), iterations: paquete.iter, hash: 'SHA-256' },
-      claveBase, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
-    );
-    const bin = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: d(paquete.iv) }, claveAES, d(paquete.datos));
-    return new TextDecoder().decode(bin);
-  }
-
-  console.log('⏳ Verificando disponibilidad…');
-  let estado;
-  try { estado = await leerEstado(); }
-  catch (e) { alert('No se pudo conectar para verificar el script. Revisa tu conexión e inténtalo de nuevo.\n' + e.message); return; }
-
-  if (!estado.activo) { alert('🔒 El script está desactivado temporalmente.' + (estado.mensaje ? '\n\n' + estado.mensaje : '')); return; }
-
-  const clave = prompt('🔑 Contraseña del script:');
-  if (!clave) return;
-
-  console.log('⏳ Descargando…');
+  const URL_SCRIPT = 'https://raw.githubusercontent.com/USUARIO/REPOSITORIO/main/script.enc.json';
+  const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
   let paquete;
-  try { paquete = await (await fetch(sinCache(URL_SCRIPT), { cache: 'no-store' })).json(); }
-  catch (e) { alert('No se pudo descargar el script: ' + e.message); return; }
+  try {
+    const r = await fetch(URL_SCRIPT + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    paquete = await r.json();
+  } catch (e) { alert('No se pudo descargar el script: ' + e.message); return; }
 
-  let codigo;
-  try { codigo = await descifrar(paquete, clave); }
-  catch (e) { alert('❌ Contraseña incorrecta.'); return; }
-
-  // El script descifrado ya trae su propia URL e intervalo fijos para seguir
-  // vigilando el interruptor mientras está abierto, no solo al arrancar.
-  try { eval(codigo); }
-  catch (e) { alert('❌ El script se descifró pero no se pudo ejecutar: ' + e.message); }
+  let clave = sessionStorage.getItem('CD_CLAVE_SCRIPT') || prompt('Clave del script de ControlDoc:');
+  if (!clave) return;
+  try {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(clave), 'PBKDF2', false, ['deriveKey']);
+    const llave = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: b64(paquete.salt), iterations: paquete.iter, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const codigo = new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(paquete.iv) }, llave, b64(paquete.data)));
+    sessionStorage.setItem('CD_CLAVE_SCRIPT', clave);
+    (0, eval)(codigo);
+  } catch (e) {
+    sessionStorage.removeItem('CD_CLAVE_SCRIPT');
+    alert('Clave incorrecta o archivo dañado.');
+  }
 })();
